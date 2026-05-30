@@ -1,24 +1,24 @@
-package service
+package business
 
 import (
 	"context"
 	"fmt"
-	"wallet-service/internal/domain"
 	apperrors "wallet-service/internal/errors"
 	"wallet-service/internal/events"
 	"wallet-service/internal/metrics"
+	"wallet-service/internal/models"
 	"wallet-service/internal/repository"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type WalletService struct {
-	db       *pgxpool.Pool
-	wallets  repository.WalletRepository
-	txns     repository.TransactionRepository
-	idem     repository.IdempotencyRepository
-	metrics  metrics.MetricsPort
-	events   events.EventPublisher
+	db      *pgxpool.Pool
+	wallets repository.WalletRepository
+	txns    repository.TransactionRepository
+	idem    repository.IdempotencyRepository
+	metrics metrics.MetricsPort
+	events  events.EventPublisher
 }
 
 func NewWalletService(
@@ -32,11 +32,11 @@ func NewWalletService(
 	return &WalletService{db: db, wallets: wallets, txns: txns, idem: idem, metrics: m, events: e}
 }
 
-func (s *WalletService) CreateWallet(ctx context.Context, customerID string, initialBalance float64) (*domain.Wallet, error) {
+func (s *WalletService) CreateWallet(ctx context.Context, customerID string, initialBalance float64) (*models.Wallet, error) {
 	if initialBalance < 0 {
 		return nil, fmt.Errorf("%w: initialBalance cannot be negative", apperrors.ErrInvalidRequest)
 	}
-	w, err := s.wallets.Create(ctx, &domain.Wallet{CustomerID: customerID, Balance: initialBalance})
+	w, err := s.wallets.Create(ctx, &models.Wallet{CustomerID: customerID, Balance: initialBalance})
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func (s *WalletService) CreateWallet(ctx context.Context, customerID string, ini
 	return w, nil
 }
 
-func (s *WalletService) GetWallet(ctx context.Context, walletID string) (*domain.Wallet, error) {
+func (s *WalletService) GetWallet(ctx context.Context, walletID string) (*models.Wallet, error) {
 	return s.wallets.FindByID(ctx, walletID)
 }
 
@@ -71,9 +71,9 @@ func (s *WalletService) TopUp(ctx context.Context, walletID string, amount float
 		return nil, err
 	}
 
-	txn, err := s.txns.Append(ctx, tx, &domain.WalletTransaction{
+	txn, err := s.txns.Append(ctx, tx, &models.WalletTransaction{
 		WalletID:    walletID,
-		Type:        domain.MovementTopUp,
+		Type:        models.MovementTopUp,
 		Amount:      amount,
 		ReferenceID: referenceID,
 	})
@@ -92,10 +92,10 @@ func (s *WalletService) TopUp(ctx context.Context, walletID string, amount float
 }
 
 type DeductResult struct {
-	WalletID                 string
-	Balance                  float64
-	TransactionID            string
-	DeductedAmount           float64
+	WalletID                   string
+	Balance                    float64
+	TransactionID              string
+	DeductedAmount             float64
 	ServedFromIdempotencyCache bool
 }
 
@@ -113,7 +113,6 @@ func (s *WalletService) Deduct(ctx context.Context, walletID, idempotencyKey str
 	}
 	defer tx.Rollback(ctx)
 
-	// Check idempotency record first.
 	existing, err := s.idem.Find(ctx, tx, walletID, idempotencyKey)
 	if err != nil {
 		return nil, err
@@ -135,13 +134,12 @@ func (s *WalletService) Deduct(ctx context.Context, walletID, idempotencyKey str
 
 	newBalance, err := s.wallets.DebitBalance(ctx, tx, walletID, amount)
 	if err != nil {
-		// Persist rejected outcome for idempotency on repeated insufficient-balance calls.
 		if err == apperrors.ErrInsufficientBalance {
-			_ = s.idem.Save(ctx, tx, &domain.IdempotencyRecord{
+			_ = s.idem.Save(ctx, tx, &models.IdempotencyRecord{
 				WalletID:        walletID,
 				IdempotencyKey:  idempotencyKey,
 				RequestedAmount: amount,
-				Outcome:         domain.OutcomeInsufficientBalance,
+				Outcome:         models.OutcomeInsufficientBalance,
 			})
 			_ = tx.Commit(ctx)
 			s.metrics.RecordDeductRejected()
@@ -150,9 +148,9 @@ func (s *WalletService) Deduct(ctx context.Context, walletID, idempotencyKey str
 		return nil, err
 	}
 
-	txn, err := s.txns.Append(ctx, tx, &domain.WalletTransaction{
+	txn, err := s.txns.Append(ctx, tx, &models.WalletTransaction{
 		WalletID:       walletID,
-		Type:           domain.MovementDeduct,
+		Type:           models.MovementDeduct,
 		Amount:         amount,
 		ReferenceID:    referenceID,
 		IdempotencyKey: idempotencyKey,
@@ -161,11 +159,11 @@ func (s *WalletService) Deduct(ctx context.Context, walletID, idempotencyKey str
 		return nil, err
 	}
 
-	if err := s.idem.Save(ctx, tx, &domain.IdempotencyRecord{
+	if err := s.idem.Save(ctx, tx, &models.IdempotencyRecord{
 		WalletID:        walletID,
 		IdempotencyKey:  idempotencyKey,
 		RequestedAmount: amount,
-		Outcome:         domain.OutcomeSuccess,
+		Outcome:         models.OutcomeSuccess,
 		TransactionID:   txn.TransactionID,
 		BalanceAfter:    newBalance,
 	}); err != nil {
@@ -187,12 +185,11 @@ func (s *WalletService) Deduct(ctx context.Context, walletID, idempotencyKey str
 	}, nil
 }
 
-func (s *WalletService) GetBalance(ctx context.Context, walletID string) (*domain.Wallet, error) {
+func (s *WalletService) GetBalance(ctx context.Context, walletID string) (*models.Wallet, error) {
 	return s.wallets.FindByID(ctx, walletID)
 }
 
-func (s *WalletService) GetTransactions(ctx context.Context, walletID string) ([]*domain.WalletTransaction, error) {
-	// Verify wallet exists first.
+func (s *WalletService) GetTransactions(ctx context.Context, walletID string) ([]*models.WalletTransaction, error) {
 	if _, err := s.wallets.FindByID(ctx, walletID); err != nil {
 		return nil, err
 	}

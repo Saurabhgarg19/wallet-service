@@ -1,4 +1,4 @@
-package middleware
+package auth
 
 import (
 	"net/http"
@@ -23,7 +23,7 @@ type CallerContext struct {
 
 const CallerKey = "caller"
 
-func Auth(cfg *config.Config) gin.HandlerFunc {
+func Middleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		if !strings.HasPrefix(header, "Bearer ") {
@@ -36,14 +36,14 @@ func Auth(cfg *config.Config) gin.HandlerFunc {
 
 		token := strings.TrimPrefix(header, "Bearer ")
 
-		if token == cfg.OrderServiceToken {
+		if token == cfg.Auth.OrderServiceToken {
 			c.Set(CallerKey, CallerContext{Role: RoleOrderService, CustomerID: "order-service"})
 			c.Next()
 			return
 		}
 
-		if strings.HasPrefix(token, cfg.CustomerTokenPrefix) {
-			customerID := strings.TrimPrefix(token, cfg.CustomerTokenPrefix)
+		if strings.HasPrefix(token, cfg.Auth.CustomerTokenPrefix) {
+			customerID := strings.TrimPrefix(token, cfg.Auth.CustomerTokenPrefix)
 			if customerID == "" {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, apperrors.ErrorResponse{
 					ErrorCode: "UNAUTHORIZED",
@@ -67,5 +67,15 @@ func GetCaller(c *gin.Context) CallerContext {
 	val, _ := c.Get(CallerKey)
 	caller, _ := val.(CallerContext)
 	return caller
+}
+
+// AssertOwner returns ErrForbidden if a CUSTOMER caller does not own the wallet.
+// ORDER_SERVICE callers are always allowed through.
+func AssertOwner(c *gin.Context, walletCustomerID string) error {
+	caller := GetCaller(c)
+	if caller.Role == RoleCustomer && caller.CustomerID != walletCustomerID {
+		return apperrors.ErrForbidden
+	}
+	return nil
 }
 

@@ -17,7 +17,13 @@ docker run --name postgres-wallet \
   -d postgres:15
 ```
 
-### 2. Run the service
+### 2. Set up the DB schema (first time only)
+
+```bash
+psql postgres://wallet_user:wallet_pass@localhost:5432/wallet_db -f scripts/setup_db.sql
+```
+
+### 3. Run the service
 
 ```bash
 export DATABASE_URL="postgres://wallet_user:wallet_pass@localhost:5432/wallet_db"
@@ -28,7 +34,6 @@ export PORT=8080
 go run ./cmd/server
 ```
 
-Migrations run automatically at startup.
 
 ### 3. Run the Order Service stub
 

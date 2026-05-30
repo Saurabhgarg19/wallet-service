@@ -3,7 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
-	"wallet-service/internal/domain"
+	"wallet-service/internal/models"
 	apperrors "wallet-service/internal/errors"
 
 	"github.com/jackc/pgx/v5"
@@ -19,7 +19,7 @@ func NewWalletRepo(db *pgxpool.Pool) *WalletRepo {
 	return &WalletRepo{db: db}
 }
 
-func (r *WalletRepo) Create(ctx context.Context, w *domain.Wallet) (*domain.Wallet, error) {
+func (r *WalletRepo) Create(ctx context.Context, w *models.Wallet) (*models.Wallet, error) {
 	err := r.db.QueryRow(ctx,
 		`INSERT INTO wallets (customer_id, balance)
 		 VALUES ($1, $2)
@@ -36,8 +36,8 @@ func (r *WalletRepo) Create(ctx context.Context, w *domain.Wallet) (*domain.Wall
 	return w, nil
 }
 
-func (r *WalletRepo) FindByID(ctx context.Context, walletID string) (*domain.Wallet, error) {
-	w := &domain.Wallet{}
+func (r *WalletRepo) FindByID(ctx context.Context, walletID string) (*models.Wallet, error) {
+	w := &models.Wallet{}
 	err := r.db.QueryRow(ctx,
 		`SELECT wallet_id, customer_id, balance, version, created_at
 		 FROM wallets WHERE wallet_id = $1`,
@@ -49,7 +49,6 @@ func (r *WalletRepo) FindByID(ctx context.Context, walletID string) (*domain.Wal
 	return w, err
 }
 
-// CreditBalance atomically increases balance inside an existing transaction.
 func (r *WalletRepo) CreditBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error) {
 	var newBalance float64
 	err := tx.QueryRow(ctx,
@@ -66,7 +65,6 @@ func (r *WalletRepo) CreditBalance(ctx context.Context, tx pgx.Tx, walletID stri
 }
 
 // DebitBalance atomically decreases balance only when sufficient funds exist.
-// Returns ErrInsufficientBalance when balance < amount.
 func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error) {
 	var newBalance float64
 	err := tx.QueryRow(ctx,
@@ -77,7 +75,6 @@ func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID strin
 		amount, walletID,
 	).Scan(&newBalance)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Could be not found or insufficient balance; disambiguate.
 		var exists bool
 		_ = r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallets WHERE wallet_id=$1)`, walletID).Scan(&exists)
 		if !exists {
@@ -87,4 +84,3 @@ func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID strin
 	}
 	return newBalance, err
 }
-

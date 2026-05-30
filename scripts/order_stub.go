@@ -1,5 +1,3 @@
-//go:build ignore
-
 // Order Service stub — demonstrates integration with Wallet Service.
 // Usage: go run ./scripts/order_stub.go
 package main
@@ -14,12 +12,12 @@ import (
 )
 
 const (
-	baseURL          = "http://localhost:8080"
-	customerToken    = "customer:cust-stub-01"
-	orderSvcToken    = "order-service-secret"
-	initialBalance   = 500.0
-	topUpAmount      = 300.0
-	deductAmount     = 100.0
+	baseURL        = "http://localhost:8080/api/v1"
+	customerToken  = "customer:cust-stub-04"
+	orderSvcToken  = "order-service-secret"
+	initialBalance = 500.0
+	topUpAmount    = 300.0
+	deductAmount   = 110.0
 )
 
 func main() {
@@ -42,7 +40,7 @@ func main() {
 		result["status"], result["balance"], result["servedFromIdempotencyCache"])
 
 	// 5. Deduct until insufficient balance
-	for i := 2; i <= 8; i++ {
+	for i := 2; i <= 9; i++ {
 		key := fmt.Sprintf("order-%03d", i)
 		res, code := deduct(walletID, key, deductAmount)
 		fmt.Printf("[5.%d] %s → HTTP %d balance=%.2f\n", i, key, code, res["balance"])
@@ -114,4 +112,3 @@ func must[T any](v T, err error) T {
 	}
 	return v
 }
-

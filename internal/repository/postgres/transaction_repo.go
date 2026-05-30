@@ -2,7 +2,7 @@ package postgres
 
 import (
 	"context"
-	"wallet-service/internal/domain"
+	"wallet-service/internal/models"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,7 +16,7 @@ func NewTransactionRepo(db *pgxpool.Pool) *TransactionRepo {
 	return &TransactionRepo{db: db}
 }
 
-func (r *TransactionRepo) Append(ctx context.Context, tx pgx.Tx, t *domain.WalletTransaction) (*domain.WalletTransaction, error) {
+func (r *TransactionRepo) Append(ctx context.Context, tx pgx.Tx, t *models.WalletTransaction) (*models.WalletTransaction, error) {
 	err := tx.QueryRow(ctx,
 		`INSERT INTO wallet_transactions (wallet_id, type, amount, reference_id, idempotency_key)
 		 VALUES ($1, $2, $3, $4, $5)
@@ -26,7 +26,7 @@ func (r *TransactionRepo) Append(ctx context.Context, tx pgx.Tx, t *domain.Walle
 	return t, err
 }
 
-func (r *TransactionRepo) FindByWalletID(ctx context.Context, walletID string) ([]*domain.WalletTransaction, error) {
+func (r *TransactionRepo) FindByWalletID(ctx context.Context, walletID string) ([]*models.WalletTransaction, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT transaction_id, wallet_id, type, amount,
 		        COALESCE(reference_id, ''), COALESCE(idempotency_key, ''), created_at
@@ -40,9 +40,9 @@ func (r *TransactionRepo) FindByWalletID(ctx context.Context, walletID string) (
 	}
 	defer rows.Close()
 
-	var txns []*domain.WalletTransaction
+	var txns []*models.WalletTransaction
 	for rows.Next() {
-		t := &domain.WalletTransaction{}
+		t := &models.WalletTransaction{}
 		if err := rows.Scan(&t.TransactionID, &t.WalletID, &t.Type, &t.Amount,
 			&t.ReferenceID, &t.IdempotencyKey, &t.CreatedAt); err != nil {
 			return nil, err
@@ -58,4 +58,3 @@ func nullableString(s string) interface{} {
 	}
 	return s
 }
-

@@ -3,7 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
-	"wallet-service/internal/domain"
+	"wallet-service/internal/models"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,8 +17,8 @@ func NewIdempotencyRepo(db *pgxpool.Pool) *IdempotencyRepo {
 	return &IdempotencyRepo{db: db}
 }
 
-func (r *IdempotencyRepo) Find(ctx context.Context, tx pgx.Tx, walletID, key string) (*domain.IdempotencyRecord, error) {
-	rec := &domain.IdempotencyRecord{}
+func (r *IdempotencyRepo) Find(ctx context.Context, tx pgx.Tx, walletID, key string) (*models.IdempotencyRecord, error) {
+	rec := &models.IdempotencyRecord{}
 	err := tx.QueryRow(ctx,
 		`SELECT wallet_id, idempotency_key, requested_amount, outcome,
 		        COALESCE(transaction_id::text, ''), COALESCE(balance_after, 0), created_at
@@ -33,7 +33,7 @@ func (r *IdempotencyRepo) Find(ctx context.Context, tx pgx.Tx, walletID, key str
 	return rec, err
 }
 
-func (r *IdempotencyRepo) Save(ctx context.Context, tx pgx.Tx, rec *domain.IdempotencyRecord) error {
+func (r *IdempotencyRepo) Save(ctx context.Context, tx pgx.Tx, rec *models.IdempotencyRecord) error {
 	_, err := tx.Exec(ctx,
 		`INSERT INTO deduction_idempotency
 		    (wallet_id, idempotency_key, requested_amount, outcome, transaction_id, balance_after)
@@ -43,4 +43,3 @@ func (r *IdempotencyRepo) Save(ctx context.Context, tx pgx.Tx, rec *domain.Idemp
 	)
 	return err
 }
-

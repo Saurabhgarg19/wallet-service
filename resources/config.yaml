@@ -1,0 +1,9 @@
+server:
+  port: "8080"
+
+database:
+  url: "postgres://wallet_user:wallet_pass@localhost:5432/wallet_db"
+
+auth:
+  customer_token_prefix: "customer:"
+  order_service_token: "order-service-secret"

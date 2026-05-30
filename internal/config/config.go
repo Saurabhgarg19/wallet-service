@@ -3,40 +3,52 @@ package config
 import (
 	"fmt"
 	"os"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	DatabaseURL         string
-	Port                string
-	CustomerTokenPrefix string
-	OrderServiceToken   string
+	Server   ServerConfig   `yaml:"server"`
+	Database DatabaseConfig `yaml:"database"`
+	Auth     AuthConfig     `yaml:"auth"`
 }
 
-func Load() (*Config, error) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL is required")
+type ServerConfig struct {
+	Port string `yaml:"port"`
+}
+
+type DatabaseConfig struct {
+	URL string `yaml:"url"`
+}
+
+type AuthConfig struct {
+	CustomerTokenPrefix string `yaml:"customer_token_prefix"`
+	OrderServiceToken   string `yaml:"order_service_token"`
+}
+
+func Load(path string) (*Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open config: %w", err)
+	}
+	defer f.Close()
+
+	var cfg Config
+	if err := yaml.NewDecoder(f).Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	orderToken := os.Getenv("ORDER_SERVICE_TOKEN")
-	if orderToken == "" {
-		return nil, fmt.Errorf("ORDER_SERVICE_TOKEN is required")
+	if cfg.Database.URL == "" {
+		return nil, fmt.Errorf("database.url is required")
 	}
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	if cfg.Auth.OrderServiceToken == "" {
+		return nil, fmt.Errorf("auth.order_service_token is required")
 	}
-
-	prefix := os.Getenv("CUSTOMER_TOKEN_PREFIX")
-	if prefix == "" {
-		prefix = "customer:"
+	if cfg.Server.Port == "" {
+		cfg.Server.Port = "8080"
 	}
-
-	return &Config{
-		DatabaseURL:         dbURL,
-		Port:                port,
-		CustomerTokenPrefix: prefix,
-		OrderServiceToken:   orderToken,
-	}, nil
+	if cfg.Auth.CustomerTokenPrefix == "" {
+		cfg.Auth.CustomerTokenPrefix = "customer:"
+	}
+	return &cfg, nil
 }
