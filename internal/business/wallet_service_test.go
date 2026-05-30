@@ -89,6 +89,12 @@ func TestCreateWallet_Success(t *testing.T) {
 	wRepo.AssertExpectations(t)
 }
 
+func TestCreateWallet_BelowMinimumBalance(t *testing.T) {
+	svc := newTestService(&mockWalletRepo{}, nil, nil)
+	_, err := svc.CreateWallet(context.Background(), "cust-1", 50)
+	assert.True(t, errors.Is(err, apperrors.ErrInvalidRequest))
+}
+
 func TestCreateWallet_NegativeBalance(t *testing.T) {
 	svc := newTestService(&mockWalletRepo{}, nil, nil)
 	_, err := svc.CreateWallet(context.Background(), "cust-1", -10)
@@ -99,7 +105,7 @@ func TestCreateWallet_DuplicateWallet(t *testing.T) {
 	wRepo := &mockWalletRepo{}
 	svc := newTestService(wRepo, nil, nil)
 	wRepo.On("Create", mock.Anything, mock.Anything).Return(&models.Wallet{}, apperrors.ErrDuplicateWallet)
-	_, err := svc.CreateWallet(context.Background(), "cust-1", 0)
+	_, err := svc.CreateWallet(context.Background(), "cust-1", 100)
 	assert.True(t, errors.Is(err, apperrors.ErrDuplicateWallet))
 }
 

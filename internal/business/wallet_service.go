@@ -33,8 +33,8 @@ func NewWalletService(
 }
 
 func (s *WalletService) CreateWallet(ctx context.Context, customerID string, initialBalance float64) (*models.Wallet, error) {
-	if initialBalance < 0 {
-		return nil, fmt.Errorf("%w: initialBalance cannot be negative", apperrors.ErrInvalidRequest)
+	if initialBalance < 100 {
+		return nil, fmt.Errorf("%w: initialBalance must be at least ₹100", apperrors.ErrInvalidRequest)
 	}
 	w, err := s.wallets.Create(ctx, &models.Wallet{CustomerID: customerID, Balance: initialBalance})
 	if err != nil {

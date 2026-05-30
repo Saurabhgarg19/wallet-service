@@ -26,16 +26,10 @@ psql postgres://wallet_user:wallet_pass@localhost:5432/wallet_db -f scripts/setu
 ### 3. Run the service
 
 ```bash
-export DATABASE_URL="postgres://wallet_user:wallet_pass@localhost:5432/wallet_db"
-export ORDER_SERVICE_TOKEN="order-service-secret"
-export CUSTOMER_TOKEN_PREFIX="customer:"
-export PORT=8080
-
 go run ./cmd/server
 ```
 
-
-### 3. Run the Order Service stub
+### 4. Run the Order Service stub
 
 ```bash
 go run ./scripts/order_stub.go
@@ -45,22 +39,24 @@ go run ./scripts/order_stub.go
 
 ## API Endpoints
 
+All routes (except `/health`) are under `/api/v1` and require authentication.
+
 | Method | Path | Role | Purpose |
 |--------|------|------|---------|
 | `GET` | `/health` | — | Health check |
-| `POST` | `/wallets` | CUSTOMER | Create wallet |
-| `GET` | `/wallets/:id` | CUSTOMER / ORDER_SERVICE | Get wallet details |
-| `POST` | `/wallets/:id/topup` | CUSTOMER | Add funds |
-| `POST` | `/wallets/:id/deduct` | ORDER_SERVICE | Deduct (idempotent) |
-| `GET` | `/wallets/:id/balance` | CUSTOMER / ORDER_SERVICE | Get balance |
-| `GET` | `/wallets/:id/transactions` | CUSTOMER / ORDER_SERVICE | Transaction history |
+| `POST` | `/api/v1/wallets` | CUSTOMER | Create wallet |
+| `GET` | `/api/v1/wallets/:id` | CUSTOMER / ORDER_SERVICE | Get wallet details |
+| `POST` | `/api/v1/wallets/:id/topup` | CUSTOMER | Add funds |
+| `POST` | `/api/v1/wallets/:id/deduct` | ORDER_SERVICE | Deduct (idempotent) |
+| `GET` | `/api/v1/wallets/:id/balance` | CUSTOMER / ORDER_SERVICE | Get balance |
+| `GET` | `/api/v1/wallets/:id/transactions` | CUSTOMER / ORDER_SERVICE | Transaction history |
 
 ### Authentication
 
-All endpoints (except `/health`) require `Authorization: Bearer <token>`.
+All `/api/v1` endpoints require `Authorization: Bearer <token>`.
 
 - Customer token: `customer:<customerId>` (e.g. `customer:cust-101`)
-- Order Service token: value of `ORDER_SERVICE_TOKEN` env var
+- Order Service token: configured in `resources/config.yaml`
 
 ---
 
@@ -68,25 +64,29 @@ All endpoints (except `/health`) require `Authorization: Bearer <token>`.
 
 ```bash
 # Create wallet
-curl -X POST http://localhost:8080/wallets \
+curl -X POST http://localhost:8080/api/v1/wallets \
   -H "Authorization: Bearer customer:cust-101" \
   -H "Content-Type: application/json" \
   -d '{"initialBalance": 500}'
 
 # Top up
-curl -X POST http://localhost:8080/wallets/<id>/topup \
+curl -X POST http://localhost:8080/api/v1/wallets/<id>/topup \
   -H "Authorization: Bearer customer:cust-101" \
   -H "Content-Type: application/json" \
   -d '{"amount": 300, "referenceId": "topup-001"}'
 
 # Deduct (Order Service)
-curl -X POST http://localhost:8080/wallets/<id>/deduct \
+curl -X POST http://localhost:8080/api/v1/wallets/<id>/deduct \
   -H "Authorization: Bearer order-service-secret" \
   -H "Content-Type: application/json" \
   -d '{"idempotencyKey": "order-9001", "amount": 100, "referenceId": "order-9001"}'
 
 # Get balance
-curl http://localhost:8080/wallets/<id>/balance \
+curl http://localhost:8080/api/v1/wallets/<id>/balance \
+  -H "Authorization: Bearer customer:cust-101"
+
+# Get transactions
+curl http://localhost:8080/api/v1/wallets/<id>/transactions \
   -H "Authorization: Bearer customer:cust-101"
 ```
 
@@ -98,18 +98,43 @@ curl http://localhost:8080/wallets/<id>/balance \
 go test ./...
 ```
 
+### Test Methodology
+
+| Layer | What's Tested | Approach |
+|-------|--------------|----------|
+| Business logic | `WalletService` | Unit tests with mock repositories |
+| Correctness | Balance constraint, idempotency | Tests verify `ErrInsufficientBalance`, duplicate key returns cached result |
+| Edge cases | Negative balance, invalid inputs | Sentinel error assertions |
+
+**Hard cases covered:**
+- Create wallet with negative balance → `ErrInvalidRequest`
+- Duplicate wallet for same customer → `ErrDuplicateWallet`
+- Wallet not found → `ErrWalletNotFound`
+- Deduction with same idempotency key → returns cached result
+- Deduction with same key but different amount → `ErrIdempotencyConflict`
+
+---
+
+## Business Rules
+
+- **Single currency**: All amounts in INR (₹)
+- **One wallet per customer**: Enforced by `UNIQUE INDEX` on `customer_id`
+- **Minimum balance reserve**: ₹100 — balance can never drop below this threshold
+- **Idempotency**: Only `/deduct` endpoint requires idempotency key
+- **Transaction history**: Returned in reverse chronological order (newest first)
+
 ---
 
 ## Key Design Decisions
 
 ### Atomic conditional balance update
-The debit path uses a single SQL statement:
+The debit path uses a single SQL statement that enforces the ₹100 minimum reserve:
 ```sql
 UPDATE wallets SET balance = balance - $1, version = version + 1
-WHERE wallet_id = $2 AND balance >= $1
+WHERE wallet_id = $2 AND balance >= $1 + 100
 RETURNING balance
 ```
-Eliminates the read-then-write race condition with no application-level locking.
+Ensures balance never drops below ₹100. Race-condition-free with no application-level locking.
 
 ### Idempotent deductions
 `deduction_idempotency` has `PRIMARY KEY (wallet_id, idempotency_key)`. On every deduct:
@@ -121,10 +146,10 @@ Eliminates the read-then-write race condition with no application-level locking.
 Balance update, ledger append, and idempotency record committed together. No partial states possible.
 
 ### Layered architecture
-`handler → service → repository`. Repositories are interfaces — swappable for mocks in tests or other backends in future.
+`handler → business → repository`. Repositories are interfaces — swappable for mocks in tests or other backends in future.
 
 ### Static token auth
-Customer tokens: `customer:<customerId>`. Order Service uses a single env-configured token. Simple and demonstrable; upgrade path is JWT or mTLS.
+Customer tokens: `customer:<customerId>`. Order Service uses a config file token. Simple and demonstrable; upgrade path is JWT or mTLS.
 
 ---
 
@@ -157,19 +182,27 @@ Customer tokens: `customer:<customerId>`. Order Service uses a single env-config
 
 ```
 wallet-service/
-├── cmd/server/main.go          # Entrypoint: config, DB, migrate, wire, serve
+├── cmd/server/main.go          # Entrypoint: config, DB, wire, serve
 ├── internal/
-│   ├── config/                 # Env config
-│   ├── domain/                 # Domain models and types
+│   ├── api/                    # Router + versioned route groups
+│   │   ├── router.go
+│   │   └── v1/routes.go
+│   ├── auth/                   # Auth middleware (CallerContext injection)
+│   ├── business/               # Business logic (createWallet, topup, deduct...)
+│   ├── config/                 # YAML config loading
 │   ├── errors/                 # Sentinel errors + ErrorResponse
-│   ├── handler/                # Gin HTTP handlers
-│   ├── middleware/             # Auth middleware (CallerContext injection)
-│   ├── metrics/                # MetricsPort interface + no-op
 │   ├── events/                 # EventPublisher interface + no-op
+│   ├── handler/                # Gin HTTP handlers + DTOs
+│   ├── metrics/                # MetricsPort interface + no-op
+│   ├── models/                 # Domain models and types
 │   ├── repository/             # Interfaces + PostgreSQL adapters (pgx)
-│   └── service/                # Business logic (createWallet, topup, deduct...)
-├── db/
-│   ├── embed.go                # Embeds migration files
-│   └── migrations/             # SQL migration files (up + down)
-└── scripts/order_stub.go       # Order Service integration demo
+│   └── utils/                  # DB pool + logger initialization
+├── resources/
+│   └── config.yaml             # Server, DB, auth configuration
+├── scripts/
+│   ├── setup_db.sql            # DB schema (run once before first start)
+│   └── order_stub.go           # Order Service integration demo
+└── docs/
+    ├── HLD.md
+    └── LLD.md
 ```

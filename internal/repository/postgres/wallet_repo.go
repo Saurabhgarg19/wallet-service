@@ -3,8 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
-	"wallet-service/internal/models"
 	apperrors "wallet-service/internal/errors"
+	"wallet-service/internal/models"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -64,13 +64,13 @@ func (r *WalletRepo) CreditBalance(ctx context.Context, tx pgx.Tx, walletID stri
 	return newBalance, err
 }
 
-// DebitBalance atomically decreases balance only when sufficient funds exist.
+// DebitBalance atomically decreases balance while maintaining ₹100 minimum reserve.
 func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error) {
 	var newBalance float64
 	err := tx.QueryRow(ctx,
 		`UPDATE wallets
 		 SET balance = balance - $1, version = version + 1
-		 WHERE wallet_id = $2 AND balance >= $1
+		 WHERE wallet_id = $2 AND balance >= $1 + 100
 		 RETURNING balance`,
 		amount, walletID,
 	).Scan(&newBalance)

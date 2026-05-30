@@ -13,7 +13,7 @@ import (
 
 const (
 	baseURL        = "http://localhost:8080/api/v1"
-	customerToken  = "customer:cust-stub-04"
+	customerToken  = "customer:cust-stub-06"
 	orderSvcToken  = "order-service-secret"
 	initialBalance = 500.0
 	topUpAmount    = 300.0

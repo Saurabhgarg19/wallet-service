@@ -32,7 +32,7 @@ func (r *TransactionRepo) FindByWalletID(ctx context.Context, walletID string) (
 		        COALESCE(reference_id, ''), COALESCE(idempotency_key, ''), created_at
 		 FROM wallet_transactions
 		 WHERE wallet_id = $1
-		 ORDER BY created_at ASC`,
+		 ORDER BY created_at DESC`,
 		walletID,
 	)
 	if err != nil {
