@@ -6,44 +6,45 @@
 wallet-service/
 ├── cmd/
 │   └── server/
-│       └── main.go                  # Entrypoint: config, DB init, migrate, wire, serve
+│       └── main.go                  # Entrypoint: config, DB pool init, wire, serve
 ├── internal/
+│   ├── api/
+│   │   ├── router.go                # Gin engine + /health, mounts /api group
+│   │   └── v1/
+│   │       └── routes.go            # /api/v1 routes + auth middleware
+│   ├── auth/
+│   │   └── middleware.go            # Bearer token parser, CallerContext, AssertOwner
+│   ├── business/
+│   │   └── wallet_service.go        # WalletService: all business workflows + tests
 │   ├── config/
-│   │   └── config.go                # Env-based config (DB URL, auth tokens, port)
-│   ├── domain/
-│   │   ├── wallet.go                # Wallet, WalletTransaction, IdempotencyRecord structs
-│   │   └── types.go                 # MoneyMovementType enum, DeductionOutcome enum
+│   │   └── config.go                # YAML-based config
 │   ├── errors/
 │   │   └── errors.go                # Sentinel errors + ErrorResponse struct
+│   ├── events/
+│   │   ├── events.go                # EventPublisher interface
+│   │   └── (noop implementation inline)
+│   ├── handler/
+│   │   ├── wallet_handler.go        # Gin handlers for all 6 endpoints
+│   │   ├── wallet_dto.go            # Request/response type definitions
+│   │   └── response.go              # Shared response/error helpers
+│   ├── metrics/
+│   │   ├── metrics.go               # MetricsPort interface
+│   │   └── (noop implementation inline)
+│   ├── models/
+│   │   └── models.go                # Wallet, WalletTransaction, IdempotencyRecord structs + enums
 │   ├── repository/
 │   │   ├── interfaces.go            # WalletRepository, TransactionRepository, IdempotencyRepository
 │   │   └── postgres/
 │   │       ├── wallet_repo.go       # pgx-backed WalletRepository
 │   │       ├── transaction_repo.go  # pgx-backed TransactionRepository
-│   │       ├── idempotency_repo.go  # pgx-backed IdempotencyRepository
-│   │       └── db.go                # pgxpool.Pool init helper
-│   ├── service/
-│   │   └── wallet_service.go        # WalletService: all business workflows
-│   ├── handler/
-│   │   ├── wallet_handler.go        # Gin handlers for all 6 endpoints + health
-│   │   └── response.go              # Shared response/error helpers
-│   ├── middleware/
-│   │   └── auth.go                  # Bearer token parser, CallerContext injection
-│   ├── metrics/
-│   │   ├── port.go                  # MetricsPort interface
-│   │   └── noop.go                  # NoOpMetricsPort implementation
-│   └── events/
-│       ├── publisher.go             # EventPublisher interface
-│       └── noop.go                  # NoOpEventPublisher implementation
-├── db/
-│   └── migrations/
-│       ├── 000001_wallets.up.sql
-│       ├── 000001_wallets.down.sql
-│       ├── 000002_wallet_transactions.up.sql
-│       ├── 000002_wallet_transactions.down.sql
-│       ├── 000003_deduction_idempotency.up.sql
-│       └── 000003_deduction_idempotency.down.sql
+│   │       └── idempotency_repo.go  # pgx-backed IdempotencyRepository
+│   └── utils/
+│       ├── db.go                    # pgxpool.Pool init helper
+│       └── logger.go                # slog setup helper
+├── resources/
+│   └── config.yaml                  # Server, DB, auth configuration
 ├── scripts/
+│   ├── setup_db.sql                 # Manual DB schema setup (run once)
 │   └── order_stub.go                # Runnable Order Service integration stub
 ├── docs/
 │   ├── HLD.md
@@ -57,23 +58,38 @@ wallet-service/
 
 ## 2. Configuration
 
-`internal/config/config.go` — loaded from environment variables:
+`internal/config/config.go` — loaded from `resources/config.yaml`:
 
-| Env Var | Description | Default |
-|---------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | required |
-| `PORT` | HTTP listen port | `8080` |
-| `CUSTOMER_TOKEN_PREFIX` | Prefix for customer bearer tokens | `customer:` |
-| `ORDER_SERVICE_TOKEN` | Static token for Order Service | required |
-| `LOG_LEVEL` | `debug` / `info` / `warn` | `info` |
+```yaml
+server:
+  port: "8080"
+
+database:
+  url: "postgres://wallet_user:wallet_pass@localhost:5432/wallet_db"
+
+auth:
+  customer_token_prefix: "customer:"
+  order_service_token: "order-service-secret"
+```
 
 ```go
 type Config struct {
-    DatabaseURL          string
-    Port                 string
-    CustomerTokenPrefix  string
-    OrderServiceToken    string
-    LogLevel             string
+    Server   ServerConfig
+    Database DatabaseConfig
+    Auth     AuthConfig
+}
+
+type ServerConfig struct {
+    Port string
+}
+
+type DatabaseConfig struct {
+    URL string
+}
+
+type AuthConfig struct {
+    CustomerTokenPrefix string
+    OrderServiceToken   string
 }
 ```
 
@@ -81,24 +97,29 @@ type Config struct {
 
 ## 3. DB Schema
 
-### 000001_wallets.up.sql
+### `scripts/setup_db.sql` (run once manually)
+
 ```sql
-CREATE TABLE wallets (
+-- Wallets table with ₹100 minimum balance constraint
+CREATE TABLE IF NOT EXISTS wallets (
     wallet_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     customer_id TEXT        NOT NULL,
-    balance     NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (balance >= 0),
+    balance     NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (balance >= 100),
     version     INT         NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX uq_wallets_customer ON wallets(customer_id);
-```
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wallets_customer ON wallets(customer_id);
 
-### 000002_wallet_transactions.up.sql
-```sql
-CREATE TYPE money_movement_type AS ENUM ('TOPUP', 'DEDUCT');
+-- Money movement type enum
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'money_movement_type') THEN
+        CREATE TYPE money_movement_type AS ENUM ('TOPUP', 'DEDUCT');
+    END IF;
+END $$;
 
-CREATE TABLE wallet_transactions (
+-- Transactions ledger
+CREATE TABLE IF NOT EXISTS wallet_transactions (
     transaction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     wallet_id      UUID        NOT NULL REFERENCES wallets(wallet_id),
     type           money_movement_type NOT NULL,
@@ -108,14 +129,17 @@ CREATE TABLE wallet_transactions (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_txn_wallet_id ON wallet_transactions(wallet_id);
-```
+CREATE INDEX IF NOT EXISTS idx_txn_wallet_id ON wallet_transactions(wallet_id);
 
-### 000003_deduction_idempotency.up.sql
-```sql
-CREATE TYPE deduction_outcome AS ENUM ('SUCCESS', 'INSUFFICIENT_BALANCE');
+-- Deduction outcome enum
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'deduction_outcome') THEN
+        CREATE TYPE deduction_outcome AS ENUM ('SUCCESS', 'INSUFFICIENT_BALANCE');
+    END IF;
+END $$;
 
-CREATE TABLE deduction_idempotency (
+-- Idempotency tracking (stores even failures)
+CREATE TABLE IF NOT EXISTS deduction_idempotency (
     wallet_id        UUID        NOT NULL REFERENCES wallets(wallet_id),
     idempotency_key  TEXT        NOT NULL,
     requested_amount NUMERIC(12,2) NOT NULL,
@@ -131,9 +155,23 @@ CREATE TABLE deduction_idempotency (
 
 ## 4. Domain Models
 
-### `internal/domain/wallet.go`
+### `internal/models/models.go`
 
 ```go
+type MoneyMovementType string
+
+const (
+    MovementTopUp  MoneyMovementType = "TOPUP"
+    MovementDeduct MoneyMovementType = "DEDUCT"
+)
+
+type DeductionOutcome string
+
+const (
+    OutcomeSuccess             DeductionOutcome = "SUCCESS"
+    OutcomeInsufficientBalance DeductionOutcome = "INSUFFICIENT_BALANCE"
+)
+
 type Wallet struct {
     WalletID   string
     CustomerID string
@@ -163,24 +201,6 @@ type IdempotencyRecord struct {
 }
 ```
 
-### `internal/domain/types.go`
-
-```go
-type MoneyMovementType string
-
-const (
-    TopUp  MoneyMovementType = "TOPUP"
-    Deduct MoneyMovementType = "DEDUCT"
-)
-
-type DeductionOutcome string
-
-const (
-    OutcomeSuccess            DeductionOutcome = "SUCCESS"
-    OutcomeInsufficientBalance DeductionOutcome = "INSUFFICIENT_BALANCE"
-)
-```
-
 ---
 
 ## 5. Error Model
@@ -204,7 +224,7 @@ type ErrorResponse struct {
 }
 ```
 
-Error-to-HTTP-status mapping (in handler):
+Error-to-HTTP-status mapping (in `internal/handler/response.go`):
 
 | Sentinel Error | HTTP Status |
 |----------------|-------------|
@@ -246,43 +266,57 @@ type IdempotencyRepository interface {
 
 ## 7. Repository Implementations
 
-### WalletRepository — Debit Strategy
+### WalletRepository — Debit Strategy (with ₹100 reserve)
 
 ```go
-// DebitBalance uses atomic conditional UPDATE — no separate balance read needed.
+// DebitBalance atomically decreases balance while maintaining ₹100 minimum reserve.
 // Returns new balance. Returns ErrInsufficientBalance if 0 rows affected.
-func (r *pgWalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error) {
+func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error) {
     var newBalance float64
     err := tx.QueryRow(ctx,
         `UPDATE wallets
          SET balance = balance - $1, version = version + 1
-         WHERE wallet_id = $2 AND balance >= $1
+         WHERE wallet_id = $2 AND balance >= $1 + 100
          RETURNING balance`,
         amount, walletID,
     ).Scan(&newBalance)
     if errors.Is(err, pgx.ErrNoRows) {
+        var exists bool
+        _ = r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallets WHERE wallet_id=$1)`, walletID).Scan(&exists)
+        if !exists {
+            return 0, apperrors.ErrWalletNotFound
+        }
         return 0, apperrors.ErrInsufficientBalance
     }
     return newBalance, err
 }
 ```
 
-### WalletRepository — Credit Strategy (TopUp)
+### TransactionRepository — Reverse Chronological Order
 
 ```go
-func (r *pgWalletRepo) CreditBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error) {
-    var newBalance float64
-    err := tx.QueryRow(ctx,
-        `UPDATE wallets
-         SET balance = balance + $1, version = version + 1
-         WHERE wallet_id = $2
-         RETURNING balance`,
-        amount, walletID,
-    ).Scan(&newBalance)
-    if errors.Is(err, pgx.ErrNoRows) {
-        return 0, apperrors.ErrWalletNotFound
+func (r *TransactionRepo) FindByWalletID(ctx context.Context, walletID string) ([]*models.WalletTransaction, error) {
+    rows, err := r.db.Query(ctx,
+        `SELECT transaction_id, wallet_id, type, amount,
+                COALESCE(reference_id, ''), COALESCE(idempotency_key, ''), created_at
+         FROM wallet_transactions
+         WHERE wallet_id = $1
+         ORDER BY created_at DESC`,  -- Newest first
+        walletID,
+    )
+    if err != nil {
+        return nil, err
     }
-    return newBalance, err
+    defer rows.Close()
+    var transactions []*models.WalletTransaction
+    for rows.Next() {
+        var t models.WalletTransaction
+        if err := rows.Scan(&t.TransactionID, &t.WalletID, &t.Type, &t.Amount, &t.ReferenceID, &t.IdempotencyKey, &t.CreatedAt); err != nil {
+            return nil, err
+        }
+        transactions = append(transactions, &t)
+    }
+    return transactions, err
 }
 ```
 
@@ -290,7 +324,7 @@ func (r *pgWalletRepo) CreditBalance(ctx context.Context, tx pgx.Tx, walletID st
 
 ## 8. Service Layer
 
-### `internal/service/wallet_service.go`
+### `internal/business/wallet_service.go`
 
 ```go
 type WalletService struct {
@@ -303,71 +337,70 @@ type WalletService struct {
 }
 ```
 
-### 8.1 CreateWallet
+### 8.1 CreateWallet (with ₹100 minimum)
 
-1. Validate `initialBalance >= 0`.
-2. Build `domain.Wallet{CustomerID: callerCustomerID, Balance: initialBalance}`.
+1. Validate `initialBalance >= 100` → reject with `ErrInvalidRequest` if not.
+2. Build `models.Wallet{CustomerID: callerCustomerID, Balance: initialBalance}`.
 3. Call `walletRepo.Create(ctx, wallet)`.
 4. Emit `WalletCreated` event.
 5. Return wallet.
 
-### 8.2 TopUp
-
-1. Validate `amount > 0`.
-2. Begin DB transaction.
-3. `walletRepo.CreditBalance(ctx, tx, walletID, amount)`.
-4. `txnRepo.Append(ctx, tx, &WalletTransaction{Type: TOPUP, ...})`.
-5. Commit.
-6. Record metrics, publish event.
-7. Return updated balance + transaction ID.
-
-### 8.3 Deduct (Full Workflow)
+### 8.3 Deduct (Full Workflow with failure storage)
 
 1. Validate `idempotencyKey != ""` and `amount > 0`.
 2. Begin DB transaction.
 3. `idemRepo.Find(ctx, tx, walletID, idempotencyKey)`.
-   - **Record exists, amount matches** → commit (no-op), return stored outcome with `ServedFromCache=true`.
+   - **Record exists, amount matches** → rollback (no-op), return stored outcome with `ServedFromCache=true`.
    - **Record exists, amount differs** → rollback, return `ErrIdempotencyConflict`.
-4. `walletRepo.DebitBalance(ctx, tx, walletID, amount)`.
-   - **0 rows** → rollback, store `INSUFFICIENT_BALANCE` record, return `ErrInsufficientBalance`.
+4. `walletRepo.DebitBalance(ctx, tx, walletID, amount)`. (checks `balance >= amount + 100`)
+   - **0 rows** → **store `INSUFFICIENT_BALANCE` record**, commit, return `ErrInsufficientBalance`.
 5. `txnRepo.Append(ctx, tx, &WalletTransaction{Type: DEDUCT, ...})`.
 6. `idemRepo.Save(ctx, tx, &IdempotencyRecord{Outcome: SUCCESS, ...})`.
 7. Commit.
 8. Record metrics, publish event.
 9. Return success response.
 
-### 8.4 GetBalance
-
-1. `walletRepo.FindByID(ctx, walletID)`.
-2. Verify caller can access wallet.
-3. Return `{ walletId, balance }`.
-
-### 8.5 GetTransactions
-
-1. `walletRepo.FindByID(ctx, walletID)` (ownership check).
-2. `txnRepo.FindByWalletID(ctx, walletID)`.
-3. Return list.
-
 ---
 
 ## 9. Authentication and Authorization
 
-### `internal/middleware/auth.go`
+### `internal/auth/middleware.go`
 
 Token parsing rules:
 
 | Token format | Role | CustomerID |
 |---|---|---|
 | `customer:<customerId>` | `CUSTOMER` | extracted from token |
-| matches `ORDER_SERVICE_TOKEN` env | `ORDER_SERVICE` | `"order-service"` |
+| matches `order_service_token` from config | `ORDER_SERVICE` | `"order-service"` |
 | anything else | — | → 401 |
 
 `CallerContext` is injected into Gin context:
 
 ```go
+type CallerRole string
+
+const (
+    RoleCustomer     CallerRole = "CUSTOMER"
+    RoleOrderService CallerRole = "ORDER_SERVICE"
+)
+
 type CallerContext struct {
     Role       CallerRole
     CustomerID string
+}
+```
+
+### Authorization Helper
+
+```go
+// AssertOwner returns ErrForbidden if a CUSTOMER caller does not own the wallet.
+// ORDER_SERVICE callers are always allowed through.
+func AssertOwner(c *gin.Context, walletCustomerID string) error {
+    caller := GetCaller(c)
+    if caller.Role == RoleCustomer && caller.CustomerID != walletCustomerID {
+        return apperrors.ErrForbidden
+    }
+    return nil
 }
 ```
 
@@ -375,23 +408,12 @@ type CallerContext struct {
 
 | Endpoint | CUSTOMER | ORDER_SERVICE |
 |---|---|---|
-| `POST /wallets` | ✅ | ❌ |
-| `GET /wallets/:id` | ✅ (own wallet) | ✅ |
-| `POST /wallets/:id/topup` | ✅ (own wallet) | ❌ |
-| `POST /wallets/:id/deduct` | ❌ | ✅ |
-| `GET /wallets/:id/balance` | ✅ (own wallet) | ✅ |
-| `GET /wallets/:id/transactions` | ✅ (own wallet) | ✅ |
-
-Ownership check helper in handler layer:
-
-```go
-func assertOwner(ctx CallerContext, wallet *domain.Wallet) error {
-    if ctx.Role == CUSTOMER && ctx.CustomerID != wallet.CustomerID {
-        return ErrForbidden
-    }
-    return nil
-}
-```
+| `POST /api/v1/wallets` | ✅ | ❌ |
+| `GET /api/v1/wallets/:id` | ✅ (own wallet) | ✅ |
+| `POST /api/v1/wallets/:id/topup` | ✅ (own wallet) | ❌ |
+| `POST /api/v1/wallets/:id/deduct` | ❌ | ✅ |
+| `GET /api/v1/wallets/:id/balance` | ✅ (own wallet) | ✅ |
+| `GET /api/v1/wallets/:id/transactions` | ✅ (own wallet) | ✅ |
 
 ---
 
@@ -505,42 +527,42 @@ Both have no-op default implementations (`NoOpMetricsPort`, `NoOpEventPublisher`
 
 ## 12. Testing Plan
 
-### Unit Tests — `internal/service/wallet_service_test.go`
+### Unit Tests — `internal/business/wallet_service_test.go` (10 tests)
 
-Mock repository interfaces using `testify/mock` or hand-written stubs.
+Mock repository interfaces using `testify/mock`.
 
 | Test Case | Assertion |
 |-----------|-----------|
-| `CreateWallet` success | wallet returned, balance set |
-| `TopUp` success | balance increased, transaction appended |
-| `Deduct` success | balance decreased, idempotency record saved |
-| `Deduct` insufficient balance | `ErrInsufficientBalance` returned, balance unchanged |
-| `Deduct` idempotent replay (same amount) | stored outcome returned, no DB mutation |
-| `Deduct` idempotency conflict (different amount) | `ErrIdempotencyConflict` returned |
-| `Deduct` wallet not found | `ErrWalletNotFound` returned |
-| `CreateWallet` invalid initial balance | `ErrInvalidRequest` |
+| `CreateWallet` success (≥ ₹100) | wallet returned, balance set |
+| `CreateWallet` below minimum (< ₹100) | `ErrInvalidRequest` returned |
+| `CreateWallet` negative balance | `ErrInvalidRequest` returned |
+| `CreateWallet` duplicate customer | `ErrDuplicateWallet` returned |
+| `Deduct` missing idempotency key | `ErrInvalidRequest` returned |
+| `Deduct` invalid amount (≤ 0) | `ErrInvalidRequest` returned |
+| `TopUp` invalid amount (≤ 0) | `ErrInvalidRequest` returned |
+| `GetWallet` not found | `ErrWalletNotFound` returned |
+| `GetTransactions` success | transactions list returned |
 
-### Handler / Integration Tests — `internal/handler/wallet_handler_test.go`
+**Note:** Full transaction-based tests (TopUp, Deduct with success/failure/idempotency) require mocking `pgxpool.Pool.Begin()` which is complex. These flows are demonstrated end-to-end via the order stub.
 
-Use `httptest.NewRecorder()` + real Postgres (testcontainers-go or local Docker).
+### Integration Demonstration — `scripts/order_stub.go`
 
-| Test Case | Expected Status |
-|-----------|----------------|
-| `POST /wallets` with valid customer token | 201 |
-| `POST /wallets` with order-service token | 403 |
-| `POST /wallets/:id/deduct` with customer token | 403 |
-| `POST /wallets/:id/deduct` with order-service token, sufficient balance | 200 |
-| `POST /wallets/:id/deduct` with insufficient balance | 409 |
-| Repeated deduct with same idempotency key | 200, `servedFromIdempotencyCache: true` |
-| `GET /wallets/:id/balance` with wrong customer token | 403 |
-| No auth header | 401 |
+| Scenario | Verification |
+|----------|-------------|
+| Create wallet with ≥ ₹100 | 201 Created |
+| Top-up | Balance increases |
+| First deduct | Success, balance decreased, `cached=false` |
+| Retry deduct (same key) | Success, same balance, `cached=true` |
+| Deduct until balance < ₹100 + amount | `INSUFFICIENT_BALANCE` |
+| Transaction history | Newest first |
 
-### Concurrency Tests
+### Concurrency Tests (Proposed)
 
 ```go
-// Fire 20 concurrent deduct goroutines against a wallet with ₹1000.
-// Each deducts ₹100. Assert exactly 10 succeed, 10 fail.
-// Assert final balance == 0, never negative.
+// Fire 20 concurrent deduct goroutines against a wallet with ₹1200.
+// Each deducts ₹100.
+// Assert exactly 10 succeed (leaving ₹200 = 10 deductions, ₹100 reserve).
+// Assert final balance == 100, never drops below 100.
 ```
 
 ---
@@ -549,22 +571,24 @@ Use `httptest.NewRecorder()` + real Postgres (testcontainers-go or local Docker)
 
 `scripts/order_stub.go` — runnable with `go run ./scripts/order_stub.go`:
 
-1. `POST /wallets` → create wallet with ₹500 initial balance.
-2. `POST /wallets/:id/topup` → add ₹300.
-3. Fire `POST /wallets/:id/deduct` with `idempotencyKey=order-001` → succeeds (₹700 → ₹600).
-4. Retry same request with `idempotencyKey=order-001` → idempotent replay, balance unchanged.
-5. Fire `POST /wallets/:id/deduct` with different key → succeeds.
-6. Fire deducts until balance < ₹100 → gets `INSUFFICIENT_BALANCE`.
-7. Print summary of all responses.
+1. `POST /api/v1/wallets` → create wallet with ₹500 initial balance.
+2. `POST /api/v1/wallets/:id/topup` → add ₹300 (total ₹800).
+3. Fire `POST /api/v1/wallets/:id/deduct` with `idempotencyKey=order-001`, amount=110 → succeeds (₹800 → ₹690).
+4. Retry same request with `idempotencyKey=order-001` → idempotent replay, `cached=true`, balance unchanged.
+5. Fire deducts with different keys until balance would drop below ₹100 + amount → gets `INSUFFICIENT_BALANCE`.
+6. Print summary of all responses.
 
 ---
 
 ## 14. Implementation Notes
 
-- Money stored as `NUMERIC(12,2)` (supports paise-level precision if needed later). Go side uses `float64` for simplicity in this exercise; upgrade to `github.com/shopspring/decimal` for production.
-- `walletId` is UUID generated by PostgreSQL (`gen_random_uuid()`). Go uses string UUIDs everywhere.
-- State mutation ordering: DB commit first, then metrics + events (best-effort side effects).
-- `golang-migrate` runs `db/migrations/*.up.sql` at service startup via embedded FS.
-- Structured JSON logging via `log/slog` (Go 1.21+).
-- DB pool managed by `pgxpool.Pool`; connection string from `DATABASE_URL` env var.
+- **Money precision**: Stored as `NUMERIC(12,2)` (supports paise-level precision). Go uses `float64` for simplicity; upgrade to `github.com/shopspring/decimal` for production.
+- **UUIDs**: Generated by PostgreSQL (`gen_random_uuid()`). Go uses string UUIDs everywhere.
+- **Config loading**: `resources/config.yaml` parsed via `gopkg.in/yaml.v3`.
+- **DB pool**: Managed by `pgxpool.Pool` from `github.com/jackc/pgx/v5`.
+- **Logging**: Structured JSON logging via `log/slog` (Go 1.21+).
+- **HTTP framework**: Gin (`github.com/gin-gonic/gin`).
+- **Versioned API**: All routes under `/api/v1` for future extensibility.
+- **₹100 minimum reserve**: Enforced at DB (`CHECK`), SQL (`WHERE`), and business logic levels.
+- **Transaction ordering**: `ORDER BY created_at DESC` for reverse chronological (newest first).
 

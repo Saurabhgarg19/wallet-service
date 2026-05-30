@@ -4,7 +4,7 @@
 
 Build a Wallet Service for a logistics platform that:
 
-- Owns customer balances; a wallet can **never go negative**.
+- Owns customer balances; a wallet must maintain a **minimum reserve of ₹100** and never drop below it.
 - Records every money movement in an **immutable ledger**.
 - Makes every `deduct` call from `Order Service` **idempotent**.
 
@@ -15,14 +15,14 @@ The service is written in **Go**, persists state in **PostgreSQL**, and exposes 
 ## 2. Scope
 
 **In scope:**
-- Wallet creation
+- Wallet creation (minimum ₹100 initial balance)
 - Wallet top-up
-- Order-value deduction (idempotent, atomic)
+- Order-value deduction (idempotent, atomic, maintains ₹100 reserve)
 - Balance lookup
-- Transaction history lookup
+- Transaction history lookup (reverse chronological order)
 - Lightweight static-token authentication and authorization
 - Metrics and event publishing extension points (no-op defaults)
-- Self-migrating DB schema at startup
+- Manual DB schema setup via `scripts/setup_db.sql`
 
 **Out of scope:**
 - Full IAM / JWT / mTLS
@@ -140,38 +140,48 @@ flowchart LR
 
 ## 8. Core Design Decisions
 
-### 8.1 Atomic Conditional Balance Update
+### 8.1 Minimum Balance Reserve (₹100)
+All wallets must maintain a minimum balance of ₹100. This is enforced at three levels:
+- **Database constraint**: `CHECK (balance >= 100)` on `wallets` table
+- **Business logic**: `CreateWallet` rejects `initialBalance < 100`
+- **Debit SQL**: `WHERE balance >= $1 + 100` ensures reserve stays intact after deduction
+
+### 8.2 Atomic Conditional Balance Update
 Instead of read-then-write (which is race-prone), the debit path uses:
 
 ```sql
 UPDATE wallets
 SET balance = balance - $1, version = version + 1
-WHERE wallet_id = $2 AND balance >= $1
+WHERE wallet_id = $2 AND balance >= $1 + 100
 RETURNING balance
 ```
 
-- If 1 row updated → debit succeeded.
-- If 0 rows updated → insufficient balance or wallet missing.
+- If 1 row updated → debit succeeded, ₹100 reserve maintained.
+- If 0 rows updated → insufficient balance (after reserve) or wallet missing.
 - The entire deduction (balance update + ledger row + idempotency row) runs inside **one DB transaction**.
 
-### 8.2 Idempotent Deduction
-The `deduction_idempotency` table has a `UNIQUE(wallet_id, idempotency_key)` constraint.
+### 8.3 Idempotent Deduction
+The `deduction_idempotency` table has a `PRIMARY KEY (wallet_id, idempotency_key)` constraint.
 
 Flow:
 1. Check if idempotency record exists → return stored outcome (replay).
 2. If amount differs → reject as `IDEMPOTENCY_CONFLICT`.
 3. If new → run atomic debit, persist record in same transaction.
+4. **Even failures are stored** (e.g., `INSUFFICIENT_BALANCE` outcome) to ensure consistent replay.
 
-### 8.3 Ledger as Source of Truth for Audit
+### 8.4 Transaction History Ordering
+`GET /wallets/:id/transactions` returns entries in **reverse chronological order** (newest first) via `ORDER BY created_at DESC`.
+
+### 8.5 Ledger as Source of Truth for Audit
 Every top-up and deduction appends a row to `wallet_transactions`. The `balance` column on `wallets` is a fast-read cache. On conflict these two sources should always agree (enforced by same-transaction writes).
 
-### 8.4 Static Token Auth
+### 8.6 Static Token Auth
 - `customer:<customerId>` → role `CUSTOMER`, identity extracted from token.
-- `order-service-token` (configurable) → role `ORDER_SERVICE`.
+- `order-service-secret` (from config file) → role `ORDER_SERVICE`.
 - `POST /wallets` derives `customerId` from token (not request body).
 - Customer operations enforce wallet ownership.
 
-### 8.5 No-Op Metrics and Events
+### 8.7 No-Op Metrics and Events
 `MetricsPort` and `EventPublisher` are interfaces with no-op defaults. Easily replaced with Prometheus / Kafka in production without touching business logic.
 
 ---
@@ -282,7 +292,7 @@ sequenceDiagram
         Service->>DB: ROLLBACK
         Service-->>Handler: 409 IDEMPOTENCY_CONFLICT
     else New request
-        Service->>DB: UPDATE wallets SET balance = balance - $1 WHERE balance >= $1
+        Service->>DB: UPDATE wallets SET balance = balance - $1 WHERE balance >= $1 + 100
         alt 0 rows updated
             Service->>DB: ROLLBACK
             Service-->>Handler: 409 INSUFFICIENT_BALANCE
@@ -298,27 +308,39 @@ sequenceDiagram
 
 ---
 
-## 11. Failure Handling
+## 11. Business Rules
+
+- **Single currency**: All amounts in INR (₹)
+- **One wallet per customer**: Enforced by `UNIQUE INDEX` on `customer_id`
+- **Minimum balance reserve**: ₹100 — balance can never drop below this threshold
+- **Idempotency**: Only `/deduct` endpoint requires idempotency key
+- **Transaction history**: Returned in reverse chronological order (newest first)
+
+---
+
+## 12. Failure Handling
 
 | Scenario | HTTP Status | Error Code |
 |----------|-------------|------------|
-| Validation failure | 400 | `INVALID_REQUEST` |
+| Validation failure (e.g., amount ≤ 0, initialBalance < 100) | 400 | `INVALID_REQUEST` |
 | Missing / bad token | 401 | `UNAUTHORIZED` |
 | Wrong role / wrong owner | 403 | `FORBIDDEN` |
 | Wallet not found | 404 | `WALLET_NOT_FOUND` |
-| Insufficient balance | 409 | `INSUFFICIENT_BALANCE` |
+| Insufficient balance (including ₹100 reserve) | 409 | `INSUFFICIENT_BALANCE` |
 | Idempotency key conflict | 409 | `IDEMPOTENCY_CONFLICT` |
 | Duplicate wallet | 409 | `DUPLICATE_WALLET` |
 | Unexpected error | 500 | `INTERNAL_ERROR` |
 
 ---
 
-## 12. Scaling and Evolution Path
+## 13. Scaling and Evolution Path
 
 ### Current State
 - Single Go process, PostgreSQL backend.
 - Per-request DB transactions enforce correctness.
 - No distributed coordination needed.
+- Configuration via YAML file (`resources/config.yaml`).
+- Manual DB schema setup via `scripts/setup_db.sql`.
 
 ### Next Steps
 - Add pagination to `GET /wallets/:id/transactions`.
@@ -326,6 +348,8 @@ sequenceDiagram
 - Replace static token auth with JWT / mTLS.
 - Add Prometheus metrics via `MetricsPort`.
 - Add Redis for idempotency hot-path caching.
+- Integration tests with `testcontainers-go`.
+- Concurrency tests (20 goroutines, assert balance constraints hold).
 
 ### Production Deployment View
 
@@ -344,7 +368,7 @@ flowchart LR
 
 ---
 
-## 13. Observability and Operational Hooks
+## 14. Observability and Operational Hooks
 
 **MetricsPort** (interface, no-op default):
 - `RecordCreateWallet()`
@@ -364,13 +388,14 @@ flowchart LR
 
 ---
 
-## 14. Trade-offs
+## 15. Trade-offs
 
 | Decision | Trade-off |
 |----------|-----------|
 | `balance` column on `wallets` | Fast reads; duplicates data derivable from ledger. Kept consistent by same-transaction writes. |
 | Atomic conditional UPDATE for debit | Best concurrency and correctness; avoids SELECT + UPDATE race. Slightly less readable than ORM. |
-| Static token auth | Simple to run locally and demonstrate auth thinking; not production-grade security. |
-| `golang-migrate` at startup | Zero external tooling; acceptable for single-instance. In production, run migrations separately before deploy. |
+| Static bearer tokens | Simple to run locally and demonstrate auth thinking; not production-grade security. |
+| Manual DB setup via script | Requires one-time `psql` command; avoids migration tooling complexity. For production, automate via CI/CD. |
 | No-op metrics/events | Keeps service runnable without external dependencies; production readiness is an interface swap. |
-
+| ₹100 minimum reserve | Enforces business rule; prevents wallet exhaustion. Configurable via DB constraint change. |
+| Config from YAML file | Easier local development; for production, use env vars or secret managers. |
