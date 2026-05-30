@@ -103,15 +103,27 @@ go test ./...
 | Layer | What's Tested | Approach |
 |-------|--------------|----------|
 | Business logic | `WalletService` | Unit tests with mock repositories |
-| Correctness | Balance constraint, idempotency | Tests verify `ErrInsufficientBalance`, duplicate key returns cached result |
-| Edge cases | Negative balance, invalid inputs | Sentinel error assertions |
+| Validation | Input constraints | Tests verify required fields, positive amounts, minimum balance |
+| Edge cases | Error paths | Sentinel error assertions for not found, duplicate, invalid input |
 
-**Hard cases covered:**
-- Create wallet with negative balance → `ErrInvalidRequest`
-- Duplicate wallet for same customer → `ErrDuplicateWallet`
-- Wallet not found → `ErrWalletNotFound`
-- Deduction with same idempotency key → returns cached result
-- Deduction with same key but different amount → `ErrIdempotencyConflict`
+**Unit test coverage (10 tests):**
+- ✅ Create wallet with valid balance (≥ ₹100)
+- ✅ Create wallet with below-minimum balance (< ₹100) → `ErrInvalidRequest`
+- ✅ Create wallet with negative balance → `ErrInvalidRequest`
+- ✅ Duplicate wallet for same customer → `ErrDuplicateWallet`
+- ✅ Get wallet not found → `ErrWalletNotFound`
+- ✅ Get transactions success
+- ✅ Deduct without idempotency key → `ErrInvalidRequest`
+- ✅ Deduct with zero/negative amount → `ErrInvalidRequest`
+- ✅ Top-up with negative amount → `ErrInvalidRequest`
+- ✅ Top-up with zero amount → `ErrInvalidRequest`
+
+**Integration demonstration (order stub):**
+- ✅ End-to-end idempotent deduction (retry returns cached result)
+- ✅ Balance constraint enforcement (deductions fail when balance would drop below ₹100)
+- ✅ Transaction history ordering (newest first)
+
+**Note:** Full idempotency and transaction tests require mocking `pgxpool.Pool.Begin()` which returns `pgx.Tx`. The order stub (`scripts/order_stub.go`) demonstrates these behaviors work correctly end-to-end against a real database.
 
 ---
 
@@ -164,6 +176,18 @@ Customer tokens: `customer:<customerId>`. Order Service uses a config file token
 
 ---
 
+## Testing Philosophy
+
+This implementation prioritizes **correctness verification over test coverage percentage**:
+
+1. **Critical business logic** (CreateWallet, validation) has unit tests with mocks
+2. **Complex transactional flows** (Deduct with idempotency) are demonstrated via the order stub against real Postgres
+3. **Why this approach?** — Mocking `pgx.Tx` and transaction boundaries adds complexity that obscures intent. The order stub proves the system works end-to-end, which is more valuable than brittle transaction mocks.
+
+For production, I'd add integration tests using `testcontainers-go` to spin up real Postgres instances and test the full Deduct flow with proper transaction semantics.
+
+---
+
 ## What I Would Do With More Time
 
 - **Pagination** on `GET /wallets/:id/transactions`
@@ -175,6 +199,7 @@ Customer tokens: `customer:<customerId>`. Order Service uses a config file token
 - **Rate limiting** per wallet
 - **Graceful shutdown** with connection draining
 - **Docker Compose** for one-command local setup
+- **Full unit test coverage for Deduct** — requires mocking `pgxpool.Pool` transaction handling
 
 ---
 

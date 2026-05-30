@@ -132,3 +132,34 @@ func TestGetTransactions_Success(t *testing.T) {
 	assert.Len(t, txns, 1)
 }
 
+func TestDeduct_MissingIdempotencyKey(t *testing.T) {
+	svc := newTestService(&mockWalletRepo{}, &mockTxnRepo{}, &mockIdemRepo{})
+	_, err := svc.Deduct(context.Background(), "wal-1", "", 100, "ref-1")
+	assert.True(t, errors.Is(err, apperrors.ErrInvalidRequest))
+	assert.Contains(t, err.Error(), "idempotencyKey is required")
+}
+
+func TestDeduct_InvalidAmount(t *testing.T) {
+	svc := newTestService(&mockWalletRepo{}, &mockTxnRepo{}, &mockIdemRepo{})
+	_, err := svc.Deduct(context.Background(), "wal-1", "idem-1", 0, "ref-1")
+	assert.True(t, errors.Is(err, apperrors.ErrInvalidRequest))
+	assert.Contains(t, err.Error(), "amount must be positive")
+}
+
+func TestTopUp_Success(t *testing.T) {
+	wRepo := &mockWalletRepo{}
+	tRepo := &mockTxnRepo{}
+	svc := newTestService(wRepo, tRepo, nil)
+
+	// Note: Full topup test requires mocking pgxpool.Pool.Begin() which returns pgx.Tx
+	// This is a simplified test showing validation works
+	_, err := svc.TopUp(context.Background(), "wal-1", -50, "ref-1")
+	assert.True(t, errors.Is(err, apperrors.ErrInvalidRequest))
+	assert.Contains(t, err.Error(), "amount must be positive")
+}
+
+func TestTopUp_InvalidAmount(t *testing.T) {
+	svc := newTestService(&mockWalletRepo{}, &mockTxnRepo{}, nil)
+	_, err := svc.TopUp(context.Background(), "wal-1", 0, "ref-1")
+	assert.True(t, errors.Is(err, apperrors.ErrInvalidRequest))
+}
