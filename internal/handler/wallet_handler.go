@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"wallet-service/internal/auth"
 	"wallet-service/internal/business"
+	"wallet-service/internal/constants"
 	apperrors "wallet-service/internal/errors"
 
 	"github.com/gin-gonic/gin"
@@ -106,7 +107,7 @@ func (h *WalletHandler) topUp(c *gin.Context) {
 		WalletID:      result.WalletID,
 		Balance:       result.Balance,
 		TransactionID: result.TransactionID,
-		Status:        "SUCCESS",
+		Status:        constants.StatusSuccess,
 	})
 }
 
@@ -133,7 +134,7 @@ func (h *WalletHandler) deduct(c *gin.Context) {
 		WalletID:                   result.WalletID,
 		Balance:                    result.Balance,
 		TransactionID:              result.TransactionID,
-		Status:                     "SUCCESS",
+		Status:                     constants.StatusSuccess,
 		DeductedAmount:             result.DeductedAmount,
 		ServedFromIdempotencyCache: result.ServedFromIdempotencyCache,
 	})
@@ -188,4 +189,3 @@ func (h *WalletHandler) getTransactions(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, items)
 }
-

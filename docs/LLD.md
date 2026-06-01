@@ -101,7 +101,7 @@ type BusinessConfig struct {
 }
 ```
 
-Default: `MinimumBalanceReserve = 100.0` if not set in config.
+Default: `MinimumBalanceReserve = 100.0` (from `constants.DefaultMinimumBalanceReserve`) if not set in config.
 
 ---
 
@@ -348,11 +348,11 @@ type WalletService struct {
     idem              repository.IdempotencyRepository
     metrics           metrics.MetricsPort
     events            events.EventPublisher
-    minBalanceReserve float64  // loaded from config: business.minimum_balance_reserve
+    minBalanceReserve float64  // loaded from config: business.minimum_balance_reserve (default: constants.DefaultMinimumBalanceReserve = 100.0)
 }
 ```
 
-### 8.1 CreateWallet (with configurable minimum reserve)
+### 8.1 CreateWallet (with configurable minimum reserve from config; default ₹100)
 
 1. Validate `initialBalance >= minBalanceReserve` → reject with `ErrInvalidRequest` if not.
 2. Build `models.Wallet{CustomerID: callerCustomerID, Balance: initialBalance}`.
@@ -548,8 +548,8 @@ Mock repository interfaces using `testify/mock`.
 
 | Test Case | Assertion |
 |-----------|-----------|
-| `CreateWallet` success (≥ ₹100) | wallet returned, balance set |
-| `CreateWallet` below minimum (< ₹100) | `ErrInvalidRequest` returned |
+| `CreateWallet` success (≥ configured minimum reserve) | wallet returned, balance set |
+| `CreateWallet` below minimum (< configured reserve) | `ErrInvalidRequest` returned |
 | `CreateWallet` negative balance | `ErrInvalidRequest` returned |
 | `CreateWallet` duplicate customer | `ErrDuplicateWallet` returned |
 | `Deduct` missing idempotency key | `ErrInvalidRequest` returned |
@@ -564,7 +564,7 @@ Mock repository interfaces using `testify/mock`.
 
 | Scenario | Verification |
 |----------|-------------|
-| Create wallet with ≥ ₹100 | 201 Created |
+| Create wallet with ≥ configured minimum reserve | 201 Created |
 | Top-up | Balance increases |
 | First deduct | Success, balance decreased, `cached=false` |
 | Retry deduct (same key) | Success, same balance, `cached=true` |
@@ -576,8 +576,8 @@ Mock repository interfaces using `testify/mock`.
 ```go
 // Fire 20 concurrent deduct goroutines against a wallet with ₹1200.
 // Each deducts ₹100.
-// Assert exactly 10 succeed (leaving ₹200 = 10 deductions, ₹100 reserve).
-// Assert final balance == 100, never drops below 100.
+// Assert exactly 10 succeed (leaving ₹200 = 10 deductions, configured minimum reserve of ₹100).
+// Assert final balance == configured minimum reserve, never drops below it.
 ```
 
 ---

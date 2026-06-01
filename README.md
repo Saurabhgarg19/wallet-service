@@ -121,7 +121,7 @@ go test ./...
 | Edge cases | Error paths | Sentinel error assertions for not found, duplicate, invalid input |
 
 **Unit tests (10 tests):**
-- ✅ Create wallet with valid balance (≥ configured minimum reserve)
+- ✅ Create wallet with valid balance (≥ configured minimum reserve, default ₹100)
 - ✅ Create wallet with below-minimum balance → `ErrInvalidRequest`
 - ✅ Create wallet with negative balance → `ErrInvalidRequest`
 - ✅ Duplicate wallet for same customer → `ErrDuplicateWallet`
@@ -134,7 +134,7 @@ go test ./...
 
 **Integration demonstration (`scripts/order_stub.go`):**
 - ✅ End-to-end idempotent deduction — retry returns cached result, **prevents double-debit** (`cached=true`)
-- ✅ Minimum balance reserve enforcement — deductions fail cleanly when balance would drop below ₹100
+- ✅ Minimum balance reserve enforcement — deductions fail cleanly when balance would drop below configured reserve (default ₹100)
 - ✅ Transaction history ordering — newest first
 
 **Why idempotency isn't unit-tested:**
@@ -146,7 +146,7 @@ Testing idempotent replay requires mocking `pgxpool.Pool.Begin()` to control tra
 
 - **Single currency**: All amounts in INR (₹)
 - **One wallet per customer**: Enforced by `UNIQUE INDEX` on `customer_id`
-- **Minimum balance reserve**: Configurable (default ₹100) — balance can never drop below this threshold
+- **Minimum balance reserve**: Configurable via `business.minimum_balance_reserve` in `config.yaml` (default ₹100) — balance can never drop below this threshold
 - **Idempotency**: Only the `/deduct` endpoint requires an idempotency key
 - **Transaction history**: Returned in reverse chronological order (newest first)
 

@@ -4,7 +4,7 @@
 
 Build a Wallet Service for a logistics platform that:
 
-- Owns customer balances; a wallet must maintain a **minimum reserve of ₹100** and never drop below it.
+- Owns customer balances; a wallet must maintain a **minimum reserve (configurable via `business.minimum_balance_reserve` in `config.yaml`; default ₹100)** and never drop below it.
 - Records every money movement in an **immutable ledger**.
 - Makes every `deduct` call from `Order Service` **idempotent**.
 
@@ -15,9 +15,9 @@ The service is written in **Go**, persists state in **PostgreSQL**, and exposes 
 ## 2. Scope
 
 **In scope:**
-- Wallet creation (minimum ₹100 initial balance)
+- Wallet creation (minimum initial balance ≥ configured reserve; default ₹100)
 - Wallet top-up
-- Order-value deduction (idempotent, atomic, maintains ₹100 reserve)
+- Order-value deduction (idempotent, atomic, maintains configured reserve; default ₹100)
 - Balance lookup
 - Transaction history lookup (reverse chronological order)
 - Lightweight static-token authentication and authorization
@@ -300,7 +300,7 @@ sequenceDiagram
         Service->>DB: ROLLBACK
         Service-->>Handler: 409 IDEMPOTENCY_CONFLICT
     else New request
-        Service->>DB: UPDATE wallets SET balance = balance - $1 WHERE balance >= $1 + 100
+        Service->>DB: UPDATE wallets SET balance = balance - $1 WHERE balance >= $1 + configured_reserve
         alt 0 rows updated
             Service->>DB: Save INSUFFICIENT_BALANCE idempotency record
             Service->>DB: COMMIT
@@ -321,7 +321,7 @@ sequenceDiagram
 
 - **Single currency**: All amounts in INR (₹)
 - **One wallet per customer**: Enforced by `UNIQUE INDEX` on `customer_id`
-- **Minimum balance reserve**: ₹100 — balance can never drop below this threshold
+- **Minimum balance reserve**: Configurable via `business.minimum_balance_reserve` in `config.yaml` (default ₹100) — balance can never drop below this threshold
 - **Idempotency**: Only `/deduct` endpoint requires idempotency key
 - **Transaction history**: Returned in reverse chronological order (newest first)
 
@@ -331,11 +331,11 @@ sequenceDiagram
 
 | Scenario | HTTP Status | Error Code |
 |----------|-------------|------------|
-| Validation failure (e.g., amount ≤ 0, initialBalance < 100) | 400 | `INVALID_REQUEST` |
+| Validation failure (e.g., amount ≤ 0, initialBalance < configured minimum reserve) | 400 | `INVALID_REQUEST` |
 | Missing / bad token | 401 | `UNAUTHORIZED` |
 | Wrong role / wrong owner | 403 | `FORBIDDEN` |
 | Wallet not found | 404 | `WALLET_NOT_FOUND` |
-| Insufficient balance (including ₹100 reserve) | 409 | `INSUFFICIENT_BALANCE` |
+| Insufficient balance (including configured minimum reserve) | 409 | `INSUFFICIENT_BALANCE` |
 | Idempotency key conflict | 409 | `IDEMPOTENCY_CONFLICT` |
 | Duplicate wallet | 409 | `DUPLICATE_WALLET` |
 | Unexpected error | 500 | `INTERNAL_ERROR` |
@@ -406,6 +406,6 @@ flowchart LR
 | Static bearer tokens | Simple to run locally and demonstrate auth thinking; not production-grade security. |
 | Manual DB setup via script | Requires one-time `psql` command; avoids migration tooling complexity. For production, automate via CI/CD. |
 | No-op metrics/events | Keeps service runnable without external dependencies; production readiness is an interface swap. |
-| ₹100 minimum reserve | Enforces business rule; prevents wallet exhaustion. Configurable via `business.minimum_balance_reserve` in `config.yaml` — no DB migration required. |
+| Configurable minimum reserve (default ₹100) | Enforces business rule; prevents wallet exhaustion. Configurable via `business.minimum_balance_reserve` in `config.yaml` — no DB migration required. |
 | Config from YAML file | Easier local development; for production, use env vars or secret managers. |
 | pgx v5 ENUM casts | `$2::money_movement_type` and `$4::deduction_outcome` explicit casts required because pgx v5 does not auto-register custom PostgreSQL ENUM types. |

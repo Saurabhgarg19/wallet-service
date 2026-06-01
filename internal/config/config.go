@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"wallet-service/internal/constants"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -50,13 +52,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("auth.order_service_token is required")
 	}
 	if cfg.Server.Port == "" {
-		cfg.Server.Port = "8080"
+		cfg.Server.Port = constants.DefaultServerPort
 	}
 	if cfg.Auth.CustomerTokenPrefix == "" {
-		cfg.Auth.CustomerTokenPrefix = "customer:"
+		cfg.Auth.CustomerTokenPrefix = constants.DefaultCustomerTokenPrefix
 	}
 	if cfg.Business.MinimumBalanceReserve == 0 {
-		cfg.Business.MinimumBalanceReserve = 100.0
+		cfg.Business.MinimumBalanceReserve = constants.DefaultMinimumBalanceReserve
 	}
 	return &cfg, nil
 }
