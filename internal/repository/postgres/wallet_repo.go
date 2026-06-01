@@ -82,5 +82,11 @@ func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID strin
 		}
 		return 0, apperrors.ErrInsufficientBalance
 	}
+	// DB check constraint (balance >= 0) violated — reserve config allowed app to proceed
+	// but the resulting balance would be negative. Treat as insufficient balance.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+		return 0, apperrors.ErrInsufficientBalance
+	}
 	return newBalance, err
 }

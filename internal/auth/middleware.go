@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"wallet-service/internal/config"
+	"wallet-service/internal/constants"
 	apperrors "wallet-service/internal/errors"
 
 	"github.com/gin-gonic/gin"
@@ -26,18 +27,18 @@ const CallerKey = "caller"
 func Middleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") {
+		if !strings.HasPrefix(header, constants.AuthBearerPrefix) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, apperrors.ErrorResponse{
-				ErrorCode: "UNAUTHORIZED",
+				ErrorCode: constants.AuthErrorCodeUnauth,
 				Message:   "Authorization header is required.",
 			})
 			return
 		}
 
-		token := strings.TrimPrefix(header, "Bearer ")
+		token := strings.TrimPrefix(header, constants.AuthBearerPrefix)
 
 		if token == cfg.Auth.OrderServiceToken {
-			c.Set(CallerKey, CallerContext{Role: RoleOrderService, CustomerID: "order-service"})
+			c.Set(CallerKey, CallerContext{Role: RoleOrderService, CustomerID: constants.AuthOrderServiceID})
 			c.Next()
 			return
 		}
@@ -46,7 +47,7 @@ func Middleware(cfg *config.Config) gin.HandlerFunc {
 			customerID := strings.TrimPrefix(token, cfg.Auth.CustomerTokenPrefix)
 			if customerID == "" {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, apperrors.ErrorResponse{
-					ErrorCode: "UNAUTHORIZED",
+					ErrorCode: constants.AuthErrorCodeUnauth,
 					Message:   "Invalid customer token.",
 				})
 				return
@@ -57,7 +58,7 @@ func Middleware(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		c.AbortWithStatusJSON(http.StatusUnauthorized, apperrors.ErrorResponse{
-			ErrorCode: "UNAUTHORIZED",
+			ErrorCode: constants.AuthErrorCodeUnauth,
 			Message:   "Invalid token.",
 		})
 	}

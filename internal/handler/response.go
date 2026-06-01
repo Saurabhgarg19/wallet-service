@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"wallet-service/internal/constants"
 	apperrors "wallet-service/internal/errors"
 
 	"github.com/gin-gonic/gin"
@@ -37,7 +38,7 @@ func statusAndMessageFor(err error) (int, string, string) {
 	case errors.Is(err, apperrors.ErrInvalidRequest):
 		return http.StatusBadRequest, "INVALID_REQUEST", err.Error()
 	case errors.Is(err, apperrors.ErrUnauthorized):
-		return http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required."
+		return http.StatusUnauthorized, constants.AuthErrorCodeUnauth, "Authentication required."
 	case errors.Is(err, apperrors.ErrForbidden):
 		return http.StatusForbidden, "FORBIDDEN", "Access denied."
 	case errors.Is(err, apperrors.ErrWalletNotFound):
