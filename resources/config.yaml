@@ -9,5 +9,5 @@ auth:
   order_service_token: "order-service-secret"
 
 business:
-  minimum_balance_reserve: 0.0
+  minimum_balance_reserve: 100.0
 

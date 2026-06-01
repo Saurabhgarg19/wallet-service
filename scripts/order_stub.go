@@ -33,14 +33,6 @@ func main() {
 	must(topUp(walletID))
 	fmt.Printf("[2] Topped up ₹%.0f → wallet %s\n", topUpAmount, walletID)
 
-	// 2. Top up
-	must(topUp(walletID))
-	fmt.Printf("[2] Topped up ₹%.0f → wallet %s\n", topUpAmount, walletID)
-
-	// 2. Top up
-	must(topUp(walletID))
-	fmt.Printf("[2] Topped up ₹%.0f → wallet %s\n", topUpAmount, walletID)
-
 	// 3. First deduction (new idempotency key)
 	result := mustDeduct(walletID, "order-001", deductAmount)
 	fmt.Printf("[3] Deduct order-001: status=%s balance=%.2f cached=%v\n",

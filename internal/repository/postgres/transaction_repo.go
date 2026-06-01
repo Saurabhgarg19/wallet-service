@@ -2,12 +2,9 @@ package postgres
 
 import (
 	"context"
-	"errors"
-	apperrors "wallet-service/internal/errors"
 	"wallet-service/internal/models"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
