@@ -2,6 +2,8 @@
 
 A Go + PostgreSQL HTTP API service that manages customer wallet balances for a logistics platform.
 
+📐 **Design Documents**: [High-Level Design (HLD)](docs/HLD.md) · [Low-Level Design (LLD)](docs/LLD.md)
+
 ---
 
 ## Quick Start
@@ -216,6 +218,7 @@ For production: add integration tests using `testcontainers-go` to spin up real 
 
 ## What I Would Do With More Time
 
+- **Idempotency on `/topup`** — `/topup` currently accepts a `referenceId` but does not deduplicate. A unique constraint on `(wallet_id, reference_id)` for `TOPUP` rows + a lookup-and-return-cached path (same pattern as `/deduct`) would make top-up safe against network retries
 - **Pagination** on `GET /wallets/:id/transactions`
 - **JWT authentication** replacing static tokens
 - **Prometheus metrics** via `MetricsPort`

@@ -30,7 +30,7 @@ type AuthConfig struct {
 }
 
 type BusinessConfig struct {
-	MinimumBalanceReserve float64 `yaml:"minimum_balance_reserve"`
+	MinimumBalanceReserve *float64 `yaml:"minimum_balance_reserve"`
 }
 
 func Load(path string) (*Config, error) {
@@ -57,8 +57,12 @@ func Load(path string) (*Config, error) {
 	if cfg.Auth.CustomerTokenPrefix == "" {
 		cfg.Auth.CustomerTokenPrefix = constants.DefaultCustomerTokenPrefix
 	}
-	if cfg.Business.MinimumBalanceReserve == 0 {
-		cfg.Business.MinimumBalanceReserve = constants.DefaultMinimumBalanceReserve
+	if cfg.Business.MinimumBalanceReserve == nil {
+		v := constants.DefaultMinimumBalanceReserve
+		cfg.Business.MinimumBalanceReserve = &v
+	}
+	if *cfg.Business.MinimumBalanceReserve < 0 {
+		return nil, fmt.Errorf("business.minimum_balance_reserve must be >= 0, got %.2f", *cfg.Business.MinimumBalanceReserve)
 	}
 	return &cfg, nil
 }
