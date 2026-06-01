@@ -19,9 +19,9 @@ func NewTransactionRepo(db *pgxpool.Pool) *TransactionRepo {
 func (r *TransactionRepo) Append(ctx context.Context, tx pgx.Tx, t *models.WalletTransaction) (*models.WalletTransaction, error) {
 	err := tx.QueryRow(ctx,
 		`INSERT INTO wallet_transactions (wallet_id, type, amount, reference_id, idempotency_key)
-		 VALUES ($1, $2, $3, $4, $5)
+		 VALUES ($1, $2::money_movement_type, $3, $4, $5)
 		 RETURNING transaction_id, created_at`,
-		t.WalletID, t.Type, t.Amount, nullableString(t.ReferenceID), nullableString(t.IdempotencyKey),
+		t.WalletID, string(t.Type), t.Amount, nullableString(t.ReferenceID), nullableString(t.IdempotencyKey),
 	).Scan(&t.TransactionID, &t.CreatedAt)
 	return t, err
 }

@@ -9,12 +9,16 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
+)
+
+var (
+	baseURL       = "http://localhost:8080/api/v1"
+	customerToken = fmt.Sprintf("customer:cust-stub-%d", time.Now().Unix())
+	orderSvcToken = "order-service-secret"
 )
 
 const (
-	baseURL        = "http://localhost:8080/api/v1"
-	customerToken  = "customer:cust-stub-06"
-	orderSvcToken  = "order-service-secret"
 	initialBalance = 500.0
 	topUpAmount    = 300.0
 	deductAmount   = 110.0
@@ -43,7 +47,11 @@ func main() {
 	for i := 2; i <= 9; i++ {
 		key := fmt.Sprintf("order-%03d", i)
 		res, code := deduct(walletID, key, deductAmount)
-		fmt.Printf("[5.%d] %s → HTTP %d balance=%.2f\n", i, key, code, res["balance"])
+		if code >= 400 {
+			fmt.Printf("[5.%d] %s → HTTP %d %s: %s\n", i, key, code, res["errorCode"], res["message"])
+		} else {
+			fmt.Printf("[5.%d] %s → HTTP %d balance=%.2f\n", i, key, code, res["balance"])
+		}
 	}
 }
 
