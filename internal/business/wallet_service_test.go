@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 	"wallet-service/internal/business"
+	"wallet-service/internal/constants"
 	apperrors "wallet-service/internal/errors"
 	"wallet-service/internal/events"
 	"wallet-service/internal/metrics"
@@ -70,7 +71,7 @@ func (m *mockIdemRepo) Save(ctx context.Context, tx pgx.Tx, rec *models.Idempote
 // --- Helpers ---
 
 func newTestService(wRepo *mockWalletRepo, tRepo *mockTxnRepo, iRepo *mockIdemRepo) *business.WalletService {
-	return business.NewWalletService(nil, wRepo, tRepo, iRepo, metrics.NoOpMetricsPort{}, events.NoOpEventPublisher{}, 100.0)
+        return business.NewWalletService(nil, wRepo, tRepo, iRepo, metrics.NoOpMetricsPort{}, events.NoOpEventPublisher{}, constants.DefaultMinimumBalanceReserve)
 }
 
 // --- Tests ---
