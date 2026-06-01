@@ -3,9 +3,9 @@ package business
 import (
 	"context"
 	"fmt"
+	"wallet-service/internal/constants"
 	apperrors "wallet-service/internal/errors"
 	"wallet-service/internal/events"
-	"wallet-service/internal/constants"
 	"wallet-service/internal/metrics"
 	"wallet-service/internal/models"
 	"wallet-service/internal/repository"
@@ -154,7 +154,7 @@ func (s *WalletService) Deduct(ctx context.Context, walletID, idempotencyKey str
 			})
 			_ = tx.Commit(ctx)
 			s.metrics.RecordDeductRejected()
-				s.events.PublishWalletDeductionRejected(walletID, constants.StatusInsufficientBalance)
+			s.events.PublishWalletDeductionRejected(walletID, constants.StatusInsufficientBalance)
 			return nil, fmt.Errorf("%w: balance must remain above ₹%.0f minimum reserve after deduction", apperrors.ErrInsufficientBalance, s.minBalanceReserve)
 		}
 		return nil, err
