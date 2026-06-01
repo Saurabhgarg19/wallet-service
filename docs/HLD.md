@@ -140,11 +140,17 @@ flowchart LR
 
 ## 8. Core Design Decisions
 
-### 8.1 Minimum Balance Reserve (₹100)
-All wallets must maintain a minimum balance of ₹100. This is enforced at three levels:
-- **Database constraint**: `CHECK (balance >= 100)` on `wallets` table
-- **Business logic**: `CreateWallet` rejects `initialBalance < 100`
-- **Debit SQL**: `WHERE balance >= $1 + 100` ensures reserve stays intact after deduction
+### 8.1 Minimum Balance Reserve (Configurable)
+The minimum balance reserve is configurable via `resources/config.yaml`:
+```yaml
+business:
+  minimum_balance_reserve: 100.0
+```
+Enforced at two levels:
+- **Business logic**: `CreateWallet` rejects `initialBalance < minReserve`
+- **Debit SQL**: `WHERE balance >= $1 + $3` where `$3` is the configured reserve — atomic, race-condition-free
+
+The DB only has `CHECK (balance >= 0)` as an absolute safety net. The business reserve is intentionally kept at the application layer so it can be changed via config without a DB migration.
 
 ### 8.2 Atomic Conditional Balance Update
 Instead of read-then-write (which is race-prone), the debit path uses:
@@ -152,11 +158,13 @@ Instead of read-then-write (which is race-prone), the debit path uses:
 ```sql
 UPDATE wallets
 SET balance = balance - $1, version = version + 1
-WHERE wallet_id = $2 AND balance >= $1 + 100
+WHERE wallet_id = $2 AND balance >= $1::numeric + $3::numeric
 RETURNING balance
 ```
 
-- If 1 row updated → debit succeeded, ₹100 reserve maintained.
+- `$1` = deduction amount, `$2` = wallet ID, `$3` = configured minimum reserve.
+- Explicit `::numeric` casts required by pgx v5 to avoid PostgreSQL operator ambiguity with multiple untyped parameters.
+- If 1 row updated → debit succeeded, reserve maintained.
 - If 0 rows updated → insufficient balance (after reserve) or wallet missing.
 - The entire deduction (balance update + ledger row + idempotency row) runs inside **one DB transaction**.
 
@@ -294,7 +302,8 @@ sequenceDiagram
     else New request
         Service->>DB: UPDATE wallets SET balance = balance - $1 WHERE balance >= $1 + 100
         alt 0 rows updated
-            Service->>DB: ROLLBACK
+            Service->>DB: Save INSUFFICIENT_BALANCE idempotency record
+            Service->>DB: COMMIT
             Service-->>Handler: 409 INSUFFICIENT_BALANCE
         else 1 row updated
             Service->>DB: INSERT INTO wallet_transactions
@@ -339,8 +348,8 @@ sequenceDiagram
 - Single Go process, PostgreSQL backend.
 - Per-request DB transactions enforce correctness.
 - No distributed coordination needed.
-- Configuration via YAML file (`resources/config.yaml`).
-- Manual DB schema setup via `scripts/setup_db.sql`.
+- Configuration via YAML file (`resources/config.yaml`) including configurable minimum balance reserve.
+- Manual DB schema setup via `scripts/setup_db.sql` (works with Docker or Postgres.app on macOS).
 
 ### Next Steps
 - Add pagination to `GET /wallets/:id/transactions`.
@@ -397,5 +406,6 @@ flowchart LR
 | Static bearer tokens | Simple to run locally and demonstrate auth thinking; not production-grade security. |
 | Manual DB setup via script | Requires one-time `psql` command; avoids migration tooling complexity. For production, automate via CI/CD. |
 | No-op metrics/events | Keeps service runnable without external dependencies; production readiness is an interface swap. |
-| ₹100 minimum reserve | Enforces business rule; prevents wallet exhaustion. Configurable via DB constraint change. |
+| ₹100 minimum reserve | Enforces business rule; prevents wallet exhaustion. Configurable via `business.minimum_balance_reserve` in `config.yaml` — no DB migration required. |
 | Config from YAML file | Easier local development; for production, use env vars or secret managers. |
+| pgx v5 ENUM casts | `$2::money_movement_type` and `$4::deduction_outcome` explicit casts required because pgx v5 does not auto-register custom PostgreSQL ENUM types. |

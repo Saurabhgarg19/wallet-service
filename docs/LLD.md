@@ -70,6 +70,9 @@ database:
 auth:
   customer_token_prefix: "customer:"
   order_service_token: "order-service-secret"
+
+business:
+  minimum_balance_reserve: 100.0
 ```
 
 ```go
@@ -77,6 +80,7 @@ type Config struct {
     Server   ServerConfig
     Database DatabaseConfig
     Auth     AuthConfig
+    Business BusinessConfig
 }
 
 type ServerConfig struct {
@@ -91,7 +95,13 @@ type AuthConfig struct {
     CustomerTokenPrefix string
     OrderServiceToken   string
 }
+
+type BusinessConfig struct {
+    MinimumBalanceReserve float64 `yaml:"minimum_balance_reserve"`
+}
 ```
+
+Default: `MinimumBalanceReserve = 100.0` if not set in config.
 
 ---
 
@@ -100,11 +110,12 @@ type AuthConfig struct {
 ### `scripts/setup_db.sql` (run once manually)
 
 ```sql
--- Wallets table with ₹100 minimum balance constraint
+-- Wallets table — balance >= 0 is the DB safety net.
+-- Minimum reserve is enforced by application via config (business.minimum_balance_reserve).
 CREATE TABLE IF NOT EXISTS wallets (
     wallet_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     customer_id TEXT        NOT NULL,
-    balance     NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (balance >= 100),
+    balance     NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (balance >= 0),
     version     INT         NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -245,20 +256,20 @@ Error-to-HTTP-status mapping (in `internal/handler/response.go`):
 
 ```go
 type WalletRepository interface {
-    Create(ctx context.Context, wallet *domain.Wallet) (*domain.Wallet, error)
-    FindByID(ctx context.Context, walletID string) (*domain.Wallet, error)
-    DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error)
+    Create(ctx context.Context, wallet *models.Wallet) (*models.Wallet, error)
+    FindByID(ctx context.Context, walletID string) (*models.Wallet, error)
+    DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64, minReserve float64) (float64, error)
     CreditBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error)
 }
 
 type TransactionRepository interface {
-    Append(ctx context.Context, tx pgx.Tx, t *domain.WalletTransaction) (*domain.WalletTransaction, error)
-    FindByWalletID(ctx context.Context, walletID string) ([]*domain.WalletTransaction, error)
+    Append(ctx context.Context, tx pgx.Tx, t *models.WalletTransaction) (*models.WalletTransaction, error)
+    FindByWalletID(ctx context.Context, walletID string) ([]*models.WalletTransaction, error)
 }
 
 type IdempotencyRepository interface {
-    Find(ctx context.Context, tx pgx.Tx, walletID, key string) (*domain.IdempotencyRecord, error)
-    Save(ctx context.Context, tx pgx.Tx, record *domain.IdempotencyRecord) error
+    Find(ctx context.Context, tx pgx.Tx, walletID, key string) (*models.IdempotencyRecord, error)
+    Save(ctx context.Context, tx pgx.Tx, record *models.IdempotencyRecord) error
 }
 ```
 
@@ -266,19 +277,20 @@ type IdempotencyRepository interface {
 
 ## 7. Repository Implementations
 
-### WalletRepository — Debit Strategy (with ₹100 reserve)
+### WalletRepository — Debit Strategy (configurable reserve)
 
 ```go
-// DebitBalance atomically decreases balance while maintaining ₹100 minimum reserve.
+// DebitBalance atomically decreases balance while maintaining the configured minimum reserve.
+// minReserve is passed as a SQL parameter ($3) — no SQL recompilation needed when config changes.
 // Returns new balance. Returns ErrInsufficientBalance if 0 rows affected.
-func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error) {
+func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64, minReserve float64) (float64, error) {
     var newBalance float64
     err := tx.QueryRow(ctx,
         `UPDATE wallets
          SET balance = balance - $1, version = version + 1
-         WHERE wallet_id = $2 AND balance >= $1 + 100
+         WHERE wallet_id = $2 AND balance >= $1::numeric + $3::numeric
          RETURNING balance`,
-        amount, walletID,
+        amount, walletID, minReserve,
     ).Scan(&newBalance)
     if errors.Is(err, pgx.ErrNoRows) {
         var exists bool
@@ -292,9 +304,21 @@ func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID strin
 }
 ```
 
-### TransactionRepository — Reverse Chronological Order
+> **pgx v5 note**: Explicit `::numeric` casts are required when multiple untyped numeric parameters appear in an arithmetic expression. Without them PostgreSQL raises `operator is not unique: unknown + unknown`.
+
+### TransactionRepository — Reverse Chronological Order + ENUM cast
 
 ```go
+func (r *TransactionRepo) Append(ctx context.Context, tx pgx.Tx, t *models.WalletTransaction) (*models.WalletTransaction, error) {
+    err := tx.QueryRow(ctx,
+        `INSERT INTO wallet_transactions (wallet_id, type, amount, reference_id, idempotency_key)
+         VALUES ($1, $2::money_movement_type, $3, $4, $5)
+         RETURNING transaction_id, created_at`,
+        t.WalletID, string(t.Type), t.Amount, nullableString(t.ReferenceID), nullableString(t.IdempotencyKey),
+    ).Scan(&t.TransactionID, &t.CreatedAt)
+    return t, err
+}
+
 func (r *TransactionRepo) FindByWalletID(ctx context.Context, walletID string) ([]*models.WalletTransaction, error) {
     rows, err := r.db.Query(ctx,
         `SELECT transaction_id, wallet_id, type, amount,
@@ -304,21 +328,11 @@ func (r *TransactionRepo) FindByWalletID(ctx context.Context, walletID string) (
          ORDER BY created_at DESC`,  -- Newest first
         walletID,
     )
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-    var transactions []*models.WalletTransaction
-    for rows.Next() {
-        var t models.WalletTransaction
-        if err := rows.Scan(&t.TransactionID, &t.WalletID, &t.Type, &t.Amount, &t.ReferenceID, &t.IdempotencyKey, &t.CreatedAt); err != nil {
-            return nil, err
-        }
-        transactions = append(transactions, &t)
-    }
-    return transactions, err
+    // ...scan rows...
 }
 ```
+
+> **pgx v5 note**: Custom PostgreSQL ENUM types (`money_movement_type`, `deduction_outcome`) require explicit SQL casts (`$2::money_movement_type`). pgx v5 does not auto-register custom ENUM types, so passing the Go custom string type directly causes a `cannot find encode plan` error. The fix is to pass `string(t.Type)` with an explicit cast.
 
 ---
 
@@ -328,18 +342,19 @@ func (r *TransactionRepo) FindByWalletID(ctx context.Context, walletID string) (
 
 ```go
 type WalletService struct {
-    db           *pgxpool.Pool
-    walletRepo   repository.WalletRepository
-    txnRepo      repository.TransactionRepository
-    idemRepo     repository.IdempotencyRepository
-    metrics      metrics.MetricsPort
-    events       events.EventPublisher
+    db                *pgxpool.Pool
+    wallets           repository.WalletRepository
+    txns              repository.TransactionRepository
+    idem              repository.IdempotencyRepository
+    metrics           metrics.MetricsPort
+    events            events.EventPublisher
+    minBalanceReserve float64  // loaded from config: business.minimum_balance_reserve
 }
 ```
 
-### 8.1 CreateWallet (with ₹100 minimum)
+### 8.1 CreateWallet (with configurable minimum reserve)
 
-1. Validate `initialBalance >= 100` → reject with `ErrInvalidRequest` if not.
+1. Validate `initialBalance >= minBalanceReserve` → reject with `ErrInvalidRequest` if not.
 2. Build `models.Wallet{CustomerID: callerCustomerID, Balance: initialBalance}`.
 3. Call `walletRepo.Create(ctx, wallet)`.
 4. Emit `WalletCreated` event.
@@ -349,13 +364,13 @@ type WalletService struct {
 
 1. Validate `idempotencyKey != ""` and `amount > 0`.
 2. Begin DB transaction.
-3. `idemRepo.Find(ctx, tx, walletID, idempotencyKey)`.
+3. `idem.Find(ctx, tx, walletID, idempotencyKey)`.
    - **Record exists, amount matches** → rollback (no-op), return stored outcome with `ServedFromCache=true`.
    - **Record exists, amount differs** → rollback, return `ErrIdempotencyConflict`.
-4. `walletRepo.DebitBalance(ctx, tx, walletID, amount)`. (checks `balance >= amount + 100`)
-   - **0 rows** → **store `INSUFFICIENT_BALANCE` record**, commit, return `ErrInsufficientBalance`.
-5. `txnRepo.Append(ctx, tx, &WalletTransaction{Type: DEDUCT, ...})`.
-6. `idemRepo.Save(ctx, tx, &IdempotencyRecord{Outcome: SUCCESS, ...})`.
+4. `wallets.DebitBalance(ctx, tx, walletID, amount, minBalanceReserve)`. (checks `balance >= amount + minBalanceReserve`)
+   - **0 rows** → **store `INSUFFICIENT_BALANCE` idempotency record**, commit, return `ErrInsufficientBalance`.
+5. `txns.Append(ctx, tx, &WalletTransaction{Type: DEDUCT, ...})`.
+6. `idem.Save(ctx, tx, &IdempotencyRecord{Outcome: SUCCESS, ...})`.
 7. Commit.
 8. Record metrics, publish event.
 9. Return success response.
@@ -584,11 +599,13 @@ Mock repository interfaces using `testify/mock`.
 
 - **Money precision**: Stored as `NUMERIC(12,2)` (supports paise-level precision). Go uses `float64` for simplicity; upgrade to `github.com/shopspring/decimal` for production.
 - **UUIDs**: Generated by PostgreSQL (`gen_random_uuid()`). Go uses string UUIDs everywhere.
-- **Config loading**: `resources/config.yaml` parsed via `gopkg.in/yaml.v3`.
+- **Config loading**: `resources/config.yaml` parsed via `gopkg.in/yaml.v3`. Includes `business.minimum_balance_reserve` (default 100.0).
 - **DB pool**: Managed by `pgxpool.Pool` from `github.com/jackc/pgx/v5`.
 - **Logging**: Structured JSON logging via `log/slog` (Go 1.21+).
 - **HTTP framework**: Gin (`github.com/gin-gonic/gin`).
 - **Versioned API**: All routes under `/api/v1` for future extensibility.
-- **₹100 minimum reserve**: Enforced at DB (`CHECK`), SQL (`WHERE`), and business logic levels.
+- **Minimum balance reserve**: Passed as SQL parameter `$3` in debit query — reserve changes require only a config update, not a DB migration or SQL rewrite.
+- **ENUM casts**: pgx v5 requires `$2::money_movement_type` and `$4::deduction_outcome` explicit casts; Go values passed as `string(enumVal)`.
 - **Transaction ordering**: `ORDER BY created_at DESC` for reverse chronological (newest first).
+- **psql on macOS**: Use [Postgres.app](https://postgresapp.com/) and add `/Applications/Postgres.app/Contents/Versions/latest/bin` to `PATH`.
 
