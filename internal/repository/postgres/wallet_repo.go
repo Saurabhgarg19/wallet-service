@@ -64,15 +64,15 @@ func (r *WalletRepo) CreditBalance(ctx context.Context, tx pgx.Tx, walletID stri
 	return newBalance, err
 }
 
-// DebitBalance atomically decreases balance while maintaining ₹100 minimum reserve.
-func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error) {
+// DebitBalance atomically decreases balance while maintaining the configured minimum reserve.
+func (r *WalletRepo) DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64, minReserve float64) (float64, error) {
 	var newBalance float64
 	err := tx.QueryRow(ctx,
 		`UPDATE wallets
 		 SET balance = balance - $1, version = version + 1
-		 WHERE wallet_id = $2 AND balance >= $1 + 100
+		 WHERE wallet_id = $2 AND balance >= $1::numeric + $3::numeric
 		 RETURNING balance`,
-		amount, walletID,
+		amount, walletID, minReserve,
 	).Scan(&newBalance)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool

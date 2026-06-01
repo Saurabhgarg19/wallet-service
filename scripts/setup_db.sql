@@ -1,11 +1,15 @@
 -- Wallet Service — DB Setup Script
 -- Run once before starting the service for the first time:
 --   psql $DATABASE_URL -f scripts/setup_db.sql
+--
+-- Note: The minimum balance reserve is enforced at the application layer
+-- via config (business.minimum_balance_reserve in resources/config.yaml).
+-- The DB constraint only prevents balance going below 0 as an absolute safety net.
 
 CREATE TABLE IF NOT EXISTS wallets (
     wallet_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     customer_id TEXT          NOT NULL,
-    balance     NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (balance >= 100),
+    balance     NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (balance >= 0),
     version     INT           NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ   NOT NULL DEFAULT now()
 );

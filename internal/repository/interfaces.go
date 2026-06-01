@@ -11,7 +11,7 @@ type WalletRepository interface {
 	Create(ctx context.Context, wallet *models.Wallet) (*models.Wallet, error)
 	FindByID(ctx context.Context, walletID string) (*models.Wallet, error)
 	CreditBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error)
-	DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64) (float64, error)
+	DebitBalance(ctx context.Context, tx pgx.Tx, walletID string, amount float64, minReserve float64) (float64, error)
 }
 
 type TransactionRepository interface {

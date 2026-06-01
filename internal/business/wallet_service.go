@@ -13,12 +13,13 @@ import (
 )
 
 type WalletService struct {
-	db      *pgxpool.Pool
-	wallets repository.WalletRepository
-	txns    repository.TransactionRepository
-	idem    repository.IdempotencyRepository
-	metrics metrics.MetricsPort
-	events  events.EventPublisher
+	db                *pgxpool.Pool
+	wallets           repository.WalletRepository
+	txns              repository.TransactionRepository
+	idem              repository.IdempotencyRepository
+	metrics           metrics.MetricsPort
+	events            events.EventPublisher
+	minBalanceReserve float64
 }
 
 func NewWalletService(
@@ -28,13 +29,22 @@ func NewWalletService(
 	idem repository.IdempotencyRepository,
 	m metrics.MetricsPort,
 	e events.EventPublisher,
+	minBalanceReserve float64,
 ) *WalletService {
-	return &WalletService{db: db, wallets: wallets, txns: txns, idem: idem, metrics: m, events: e}
+	return &WalletService{
+		db:                db,
+		wallets:           wallets,
+		txns:              txns,
+		idem:              idem,
+		metrics:           m,
+		events:            e,
+		minBalanceReserve: minBalanceReserve,
+	}
 }
 
 func (s *WalletService) CreateWallet(ctx context.Context, customerID string, initialBalance float64) (*models.Wallet, error) {
-	if initialBalance < 100 {
-		return nil, fmt.Errorf("%w: initialBalance must be at least ₹100", apperrors.ErrInvalidRequest)
+	if initialBalance < s.minBalanceReserve {
+		return nil, fmt.Errorf("%w: initialBalance must be at least ₹%.0f", apperrors.ErrInvalidRequest, s.minBalanceReserve)
 	}
 	w, err := s.wallets.Create(ctx, &models.Wallet{CustomerID: customerID, Balance: initialBalance})
 	if err != nil {
@@ -132,7 +142,7 @@ func (s *WalletService) Deduct(ctx context.Context, walletID, idempotencyKey str
 		}, nil
 	}
 
-	newBalance, err := s.wallets.DebitBalance(ctx, tx, walletID, amount)
+	newBalance, err := s.wallets.DebitBalance(ctx, tx, walletID, amount, s.minBalanceReserve)
 	if err != nil {
 		if err == apperrors.ErrInsufficientBalance {
 			_ = s.idem.Save(ctx, tx, &models.IdempotencyRecord{
@@ -144,6 +154,7 @@ func (s *WalletService) Deduct(ctx context.Context, walletID, idempotencyKey str
 			_ = tx.Commit(ctx)
 			s.metrics.RecordDeductRejected()
 			s.events.PublishWalletDeductionRejected(walletID, "INSUFFICIENT_BALANCE")
+			return nil, fmt.Errorf("%w: balance must remain above ₹%.0f minimum reserve after deduction", apperrors.ErrInsufficientBalance, s.minBalanceReserve)
 		}
 		return nil, err
 	}

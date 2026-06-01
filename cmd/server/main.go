@@ -37,6 +37,7 @@ func main() {
 		pgRepo.NewIdempotencyRepo(pool),
 		metrics.NoOpMetricsPort{},
 		events.NoOpEventPublisher{},
+		cfg.Business.MinimumBalanceReserve,
 	)
 
 	r := api.NewRouter(cfg, pool, handler.NewWalletHandler(svc))

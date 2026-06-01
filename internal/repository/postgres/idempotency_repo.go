@@ -37,8 +37,8 @@ func (r *IdempotencyRepo) Save(ctx context.Context, tx pgx.Tx, rec *models.Idemp
 	_, err := tx.Exec(ctx,
 		`INSERT INTO deduction_idempotency
 		    (wallet_id, idempotency_key, requested_amount, outcome, transaction_id, balance_after)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		rec.WalletID, rec.IdempotencyKey, rec.RequestedAmount, rec.Outcome,
+		 VALUES ($1, $2, $3, $4::deduction_outcome, $5, $6)`,
+		rec.WalletID, rec.IdempotencyKey, rec.RequestedAmount, string(rec.Outcome),
 		nullableString(rec.TransactionID), rec.BalanceAfter,
 	)
 	return err

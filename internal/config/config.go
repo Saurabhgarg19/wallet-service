@@ -11,6 +11,7 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
 	Auth     AuthConfig     `yaml:"auth"`
+	Business BusinessConfig `yaml:"business"`
 }
 
 type ServerConfig struct {
@@ -24,6 +25,10 @@ type DatabaseConfig struct {
 type AuthConfig struct {
 	CustomerTokenPrefix string `yaml:"customer_token_prefix"`
 	OrderServiceToken   string `yaml:"order_service_token"`
+}
+
+type BusinessConfig struct {
+	MinimumBalanceReserve float64 `yaml:"minimum_balance_reserve"`
 }
 
 func Load(path string) (*Config, error) {
@@ -49,6 +54,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Auth.CustomerTokenPrefix == "" {
 		cfg.Auth.CustomerTokenPrefix = "customer:"
+	}
+	if cfg.Business.MinimumBalanceReserve == 0 {
+		cfg.Business.MinimumBalanceReserve = 100.0
 	}
 	return &cfg, nil
 }

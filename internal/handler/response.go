@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	apperrors "wallet-service/internal/errors"
 
@@ -19,28 +20,35 @@ func respondError(c *gin.Context, sentinel error, msg string) {
 }
 
 func respondErr(c *gin.Context, err error) {
-	status, code := statusFor(err)
-	c.JSON(status, apperrors.ErrorResponse{ErrorCode: code, Message: err.Error()})
+	status, code, msg := statusAndMessageFor(err)
+	if status == http.StatusInternalServerError {
+		slog.Error("unhandled error", "path", c.FullPath(), "err", err)
+	}
+	c.JSON(status, apperrors.ErrorResponse{ErrorCode: code, Message: msg})
 }
 
 func statusFor(err error) (int, string) {
-	switch {
-	case errors.Is(err, apperrors.ErrInvalidRequest):
-		return http.StatusBadRequest, "INVALID_REQUEST"
-	case errors.Is(err, apperrors.ErrUnauthorized):
-		return http.StatusUnauthorized, "UNAUTHORIZED"
-	case errors.Is(err, apperrors.ErrForbidden):
-		return http.StatusForbidden, "FORBIDDEN"
-	case errors.Is(err, apperrors.ErrWalletNotFound):
-		return http.StatusNotFound, "WALLET_NOT_FOUND"
-	case errors.Is(err, apperrors.ErrInsufficientBalance):
-		return http.StatusConflict, "INSUFFICIENT_BALANCE"
-	case errors.Is(err, apperrors.ErrIdempotencyConflict):
-		return http.StatusConflict, "IDEMPOTENCY_CONFLICT"
-	case errors.Is(err, apperrors.ErrDuplicateWallet):
-		return http.StatusConflict, "DUPLICATE_WALLET"
-	default:
-		return http.StatusInternalServerError, "INTERNAL_ERROR"
-	}
+	status, code, _ := statusAndMessageFor(err)
+	return status, code
 }
 
+func statusAndMessageFor(err error) (int, string, string) {
+	switch {
+	case errors.Is(err, apperrors.ErrInvalidRequest):
+		return http.StatusBadRequest, "INVALID_REQUEST", err.Error()
+	case errors.Is(err, apperrors.ErrUnauthorized):
+		return http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required."
+	case errors.Is(err, apperrors.ErrForbidden):
+		return http.StatusForbidden, "FORBIDDEN", "Access denied."
+	case errors.Is(err, apperrors.ErrWalletNotFound):
+		return http.StatusNotFound, "WALLET_NOT_FOUND", "Wallet not found."
+	case errors.Is(err, apperrors.ErrInsufficientBalance):
+		return http.StatusConflict, "INSUFFICIENT_BALANCE", "Insufficient balance. Wallet must maintain the minimum reserve after deduction."
+	case errors.Is(err, apperrors.ErrIdempotencyConflict):
+		return http.StatusConflict, "IDEMPOTENCY_CONFLICT", "The same idempotency key cannot be reused with a different amount."
+	case errors.Is(err, apperrors.ErrDuplicateWallet):
+		return http.StatusConflict, "DUPLICATE_WALLET", "A wallet already exists for this customer."
+	default:
+		return http.StatusInternalServerError, "INTERNAL_ERROR", "An internal error occurred."
+	}
+}
